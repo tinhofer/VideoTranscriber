@@ -235,22 +235,37 @@ def write_docx(segments, path):
     doc.save(path)
 
 
+def _unique_path(path):
+    """Return a non-conflicting path by appending _2, _3, ... if the file exists."""
+    import os
+
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(f"{base}_{n}{ext}"):
+        n += 1
+    return f"{base}_{n}{ext}"
+
+
 def _output_results(segments, args):
     """Format and output the transcription segments."""
     if args.format == "docx":
         if not args.output:
             print("Error: --format docx requires -o <file.docx>", file=sys.stderr)
             sys.exit(1)
-        write_docx(segments, args.output)
-        print(f"Transcript written to: {args.output}", file=sys.stderr)
+        out_path = _unique_path(args.output)
+        write_docx(segments, out_path)
+        print(f"Transcript written to: {out_path}", file=sys.stderr)
         return
 
     output = format_segments(segments, args.format)
 
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
+        out_path = _unique_path(args.output)
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(output)
-        print(f"Transcript written to: {args.output}", file=sys.stderr)
+        print(f"Transcript written to: {out_path}", file=sys.stderr)
     else:
         print(output)
 
