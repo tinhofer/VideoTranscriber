@@ -202,7 +202,11 @@ def download_audio(url, output_dir=None):
         wav_path = output_dir / f"{meeting_ref}.wav"
         try:
             import subprocess
-            print("Downloading audio with ffmpeg...", file=sys.stderr)
+            print(
+                "Downloading audio with ffmpeg (this may take a while "
+                "for long meetings)...",
+                file=sys.stderr,
+            )
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
                 "-headers", "Referer: https://control.eup.glcloud.eu/\r\n",
@@ -211,13 +215,14 @@ def download_audio(url, output_dir=None):
                 "-ar", "16000", # 16kHz sample rate
                 "-ac", "1",     # mono
                 "-c:a", "pcm_s16le",  # WAV format
+                "-stats",       # show progress stats
                 str(wav_path),
             ]
+            # Don't capture output — let ffmpeg progress show in terminal
             result = subprocess.run(
                 ffmpeg_cmd,
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1 hour timeout for long meetings
+                stdin=subprocess.DEVNULL,
+                timeout=7200,  # 2 hour timeout for long meetings
             )
             if result.returncode == 0 and wav_path.exists():
                 return str(wav_path)
@@ -227,11 +232,6 @@ def download_audio(url, output_dir=None):
                     f"trying yt-dlp...",
                     file=sys.stderr,
                 )
-                if result.stderr:
-                    # Show last few lines of ffmpeg error
-                    err_lines = result.stderr.strip().splitlines()[-5:]
-                    for line in err_lines:
-                        print(f"  ffmpeg: {line}", file=sys.stderr)
         except FileNotFoundError:
             print(
                 "ffmpeg not found on PATH, trying yt-dlp...",
