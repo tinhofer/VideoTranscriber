@@ -109,20 +109,28 @@ def format_segments(segments, fmt):
 def main(argv=None):
     args = parse_args(argv)
 
-    print(f"Downloading audio from: {args.url}", file=sys.stderr)
-    audio_path = download_audio(args.url, output_dir=args.audio_dir)
-    print(f"Audio saved to: {audio_path}", file=sys.stderr)
+    try:
+        print(f"Downloading audio from: {args.url}", file=sys.stderr)
+        audio_path = download_audio(args.url, output_dir=args.audio_dir)
+        print(f"Audio saved to: {audio_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"Error downloading audio: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    print(
-        f"Transcribing with model '{args.model}' (language={args.language or 'auto'})...",
-        file=sys.stderr,
-    )
-    segments = transcribe_audio(
-        audio_path,
-        model_size=args.model,
-        language=args.language,
-        task=args.task,
-    )
+    try:
+        print(
+            f"Transcribing with model '{args.model}' (language={args.language or 'auto'})...",
+            file=sys.stderr,
+        )
+        segments = transcribe_audio(
+            audio_path,
+            model_size=args.model,
+            language=args.language,
+            task=args.task,
+        )
+    except Exception as e:
+        print(f"Error during transcription: {e}", file=sys.stderr)
+        sys.exit(1)
 
     output = format_segments(segments, args.format)
 
