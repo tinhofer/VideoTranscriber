@@ -195,6 +195,21 @@ def _run_auto_mode(args):
     _output_results(segments, args)
 
 
+def _format_duration(seconds):
+    """Format a duration in seconds as 'Xh Ym Zs', omitting zero components."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
 def write_docx(segments, path):
     """Write transcription segments to a Word (.docx) file."""
     from docx import Document
@@ -203,19 +218,17 @@ def write_docx(segments, path):
     doc = Document()
     doc.add_heading("Transcript", level=1)
 
-    for segment in segments:
-        ts = format_timestamp(segment["start"]).split(",")[0]
-        lang_tag = ""
-        if "language" in segment:
-            lang_tag = f" [{segment['language'].upper()}]"
-        text = segment["text"].strip()
-
+    # Video duration from last segment
+    if segments:
+        duration = max(s["end"] for s in segments)
         p = doc.add_paragraph()
-        # Timestamp in grey
-        ts_run = p.add_run(f"[{ts}]{lang_tag}  ")
-        ts_run.font.size = Pt(9)
-        ts_run.font.color.rgb = RGBColor(128, 128, 128)
-        # Transcript text
+        run = p.add_run(f"Duration: {_format_duration(duration)}")
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(128, 128, 128)
+
+    for segment in segments:
+        text = segment["text"].strip()
+        p = doc.add_paragraph()
         text_run = p.add_run(text)
         text_run.font.size = Pt(11)
 

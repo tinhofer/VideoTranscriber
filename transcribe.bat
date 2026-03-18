@@ -45,12 +45,6 @@ if "%MODEL_CHOICE%"=="3" set "MODEL=small"
 if "%MODEL_CHOICE%"=="4" set "MODEL=medium"
 if "%MODEL_CHOICE%"=="5" set "MODEL=large-v3"
 
-:: Clean up fillers?
-echo.
-set /p "CLEAN=Remove filler words (um, äh, etc.)? [y/N]: "
-set "CLEAN_FLAG="
-if /i "%CLEAN%"=="y" set "CLEAN_FLAG=--clean"
-
 :: Output file
 echo.
 set /p "OUTFILE=Output filename (e.g. transcript.%FMT%) [press Enter for screen output]: "
@@ -64,7 +58,7 @@ echo Starting transcription...
 echo ============================================
 echo.
 
-python -m video_transcriber "%URL%" --format %FMT% --model %MODEL% %CLEAN_FLAG% %OUT_FLAG%
+python -m video_transcriber "%URL%" --format %FMT% --model %MODEL% --clean %OUT_FLAG%
 
 echo.
 echo ============================================
