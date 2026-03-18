@@ -71,6 +71,16 @@ def test_parse_args_new_options():
     assert args.audio_track == "de"
 
 
+def test_parse_args_transcript():
+    args = parse_args(["https://example.com/video", "--transcript"])
+    assert args.transcript is True
+
+
+def test_parse_args_transcript_default():
+    args = parse_args(["https://example.com/video"])
+    assert args.transcript is False
+
+
 def test_format_timestamp():
     assert format_timestamp(0) == "00:00:00,000"
     assert format_timestamp(61.5) == "00:01:01,500"

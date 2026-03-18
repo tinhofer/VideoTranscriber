@@ -3,7 +3,7 @@
 import argparse
 import sys
 
-from video_transcriber.downloader import download_audio
+from video_transcriber.downloader import download_audio, download_transcript
 from video_transcriber.postprocess import clean_segments
 from video_transcriber.transcriber import transcribe_audio
 
@@ -82,6 +82,14 @@ def parse_args(argv=None):
             "'de'/'en'/'fr'/... for interpreter channel (default: URL language)"
         ),
     )
+    parser.add_argument(
+        "--transcript",
+        action="store_true",
+        help=(
+            "Download the official EP transcript (SRT) instead of running Whisper. "
+            "Only available for video clips that have a transcript on the EP site."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -146,7 +154,9 @@ def format_segments(segments, fmt):
 def main(argv=None):
     args = parse_args(argv)
 
-    if args.mode == "auto":
+    if args.transcript:
+        _run_transcript_mode(args)
+    elif args.mode == "auto":
         _run_auto_mode(args)
     else:
         _run_simple_mode(args)
@@ -186,6 +196,23 @@ def _run_simple_mode(args):
 
     if not args.keep_audio and not args.audio_dir:
         _cleanup_file(audio_path)
+
+
+def _run_transcript_mode(args):
+    """Download and use the official EP transcript instead of Whisper."""
+    segments = download_transcript(args.url, language=args.language)
+    if segments is None:
+        print(
+            "No transcript available for this URL. "
+            "Try without --transcript to use Whisper instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.clean:
+        segments = clean_segments(segments)
+
+    _output_results(segments, args)
 
 
 def _run_auto_mode(args):

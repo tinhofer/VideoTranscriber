@@ -46,21 +46,12 @@ def extract_meeting_ref(url):
     return None
 
 
-def _resolve_video_clip_url(url):
-    """Resolve video clip URL from the EP multimedia page.
-
-    Video clips (e.g. /video/..._I242316) are hosted on Watchity CDN, not
-    on the glcloud infrastructure used for webstreaming. The EP multimedia
-    page is a Next.js app that embeds all video metadata (including direct
-    MP4 download URLs) in a ``<script id="__NEXT_DATA__">`` JSON blob.
-
-    Args:
-        url: EP multimedia video clip URL.
+def _fetch_next_data(url):
+    """Fetch and parse __NEXT_DATA__ from an EP multimedia page.
 
     Returns:
-        A direct MP4 download URL, or None if not found.
+        The parsed pageProps dict, or None if not found.
     """
-    print("Trying to resolve video from EP multimedia page...", file=sys.stderr)
     try:
         resp = requests.get(
             url,
@@ -76,73 +67,329 @@ def _resolve_video_clip_url(url):
         resp.raise_for_status()
     except Exception as e:
         print(f"Could not fetch multimedia page: {e}", file=sys.stderr)
-        return None
+        return None, None
 
     html = resp.text
-
-    # Strategy 1 (primary): Extract from __NEXT_DATA__ JSON
-    # The EP multimedia site is a Next.js app. All video metadata including
-    # direct MP4 URLs on Watchity CDN are in pageProps.mediaItemV2.mediaAssets.
     next_data_match = re.search(
         r'<script\s+id="__NEXT_DATA__"\s+type="application/json">(.*?)</script>',
         html,
         re.DOTALL,
     )
-    if next_data_match:
-        try:
-            next_data = json.loads(next_data_match.group(1))
-            page_props = next_data.get("props", {}).get("pageProps", {})
+    if not next_data_match:
+        return None, html
 
-            # Try mediaItemV2.mediaAssets first (has multiple quality levels)
-            media_v2 = page_props.get("mediaItemV2", {})
-            assets = media_v2.get("mediaAssets", [])
-            # Find the best video asset — prefer ORIGINAL, then FHD, HD, SD
-            best_url = None
-            priority = {"ORIGINAL": 0, "FHD": 1, "HD": 2, "SD": 3}
-            best_priority = 999
-            for asset in assets:
-                if asset.get("type") != "video":
-                    continue
-                asset_url = asset.get("url", "")
-                if not asset_url:
-                    continue
-                flavor = asset.get("profileFlavorId", "")
-                p = priority.get(flavor, 50)
-                if p < best_priority:
-                    best_priority = p
-                    best_url = asset_url
-            if best_url:
-                print("Found video URL via __NEXT_DATA__ (Watchity CDN)", file=sys.stderr)
-                return best_url
+    try:
+        next_data = json.loads(next_data_match.group(1))
+        page_props = next_data.get("props", {}).get("pageProps", {})
+        return page_props, html
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(f"Could not parse __NEXT_DATA__: {e}", file=sys.stderr)
+        return None, html
 
-            # Fallback: try mediaItem.videos (older format)
-            media_v1 = page_props.get("mediaItem", {})
-            videos = media_v1.get("videos", [])
-            for video in videos:
-                resolutions = video.get("resolutions", [])
-                for res in resolutions:
-                    res_url = res.get("url", "")
-                    if res_url:
-                        print(
-                            "Found video URL via __NEXT_DATA__ (legacy format)",
-                            file=sys.stderr,
-                        )
-                        return res_url
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"Could not parse __NEXT_DATA__: {e}", file=sys.stderr)
+
+def _resolve_video_clip_url(url):
+    """Resolve video clip URL from the EP multimedia page.
+
+    Video clips (e.g. /video/..._I242316) are hosted on Watchity CDN, not
+    on the glcloud infrastructure used for webstreaming. The EP multimedia
+    page is a Next.js app that embeds all video metadata (including direct
+    MP4 download URLs) in a ``<script id="__NEXT_DATA__">`` JSON blob.
+
+    Args:
+        url: EP multimedia video clip URL.
+
+    Returns:
+        A direct MP4 download URL, or None if not found.
+    """
+    print("Trying to resolve video from EP multimedia page...", file=sys.stderr)
+    page_props, html = _fetch_next_data(url)
+
+    if page_props:
+        # Try mediaItemV2.mediaAssets first (has multiple quality levels)
+        media_v2 = page_props.get("mediaItemV2", {})
+        assets = media_v2.get("mediaAssets", [])
+        # Find the best video asset — prefer ORIGINAL, then FHD, HD, SD
+        best_url = None
+        priority = {"ORIGINAL": 0, "FHD": 1, "HD": 2, "SD": 3}
+        best_priority = 999
+        for asset in assets:
+            if asset.get("type") != "video":
+                continue
+            asset_url = asset.get("url", "")
+            if not asset_url:
+                continue
+            flavor = asset.get("profileFlavorId", "")
+            p = priority.get(flavor, 50)
+            if p < best_priority:
+                best_priority = p
+                best_url = asset_url
+        if best_url:
+            print("Found video URL via __NEXT_DATA__ (Watchity CDN)", file=sys.stderr)
+            return best_url
+
+        # Fallback: try mediaItem.videos (older format)
+        media_v1 = page_props.get("mediaItem", {})
+        videos = media_v1.get("videos", [])
+        for video in videos:
+            resolutions = video.get("resolutions", [])
+            for res in resolutions:
+                res_url = res.get("url", "")
+                if res_url:
+                    print(
+                        "Found video URL via __NEXT_DATA__ (legacy format)",
+                        file=sys.stderr,
+                    )
+                    return res_url
 
     # Strategy 2: Look for direct .mp4 or .m3u8 URLs in the page
-    mp4_match = re.search(
-        r'"(https?://cdn-mmc\.watchity\.net/[^"]*\.mp4)"',
-        html,
-    )
-    if mp4_match:
-        video_url = mp4_match.group(1)
-        print("Found Watchity CDN URL in page source", file=sys.stderr)
-        return video_url
+    if html:
+        mp4_match = re.search(
+            r'"(https?://cdn-mmc\.watchity\.net/[^"]*\.mp4)"',
+            html,
+        )
+        if mp4_match:
+            video_url = mp4_match.group(1)
+            print("Found Watchity CDN URL in page source", file=sys.stderr)
+            return video_url
 
     print("Could not find video URL in multimedia page.", file=sys.stderr)
     return None
+
+
+def _resolve_transcript_url(url, language=None):
+    """Find a transcript download URL from the EP multimedia page.
+
+    The EP multimedia site provides official transcripts as SRT files for
+    some video clips. These appear under "Related content" on the page and
+    are stored in the ``__NEXT_DATA__`` JSON blob under ``pageProps``.
+
+    The transcript URLs follow this pattern:
+        https://api.multimedia.europarl.europa.eu/documents/.../<id>...[SD-<LANG>].srt?download=true
+
+    Args:
+        url: EP multimedia video clip URL.
+        language: Preferred language code (e.g. 'en', 'de'). If None, returns
+                  the first SRT transcript found.
+
+    Returns:
+        A transcript download URL (str), or None if no transcript is available.
+    """
+    if not EP_VIDEO_PATTERN.match(url):
+        return None
+
+    page_props, _ = _fetch_next_data(url)
+    if not page_props:
+        return None
+
+    return _extract_transcript_url(page_props, language=language)
+
+
+def _extract_transcript_url(page_props, language=None):
+    """Extract transcript URL from parsed pageProps.
+
+    Searches through relatedItems/documents/attachments in the pageProps
+    for SRT transcript files.
+
+    Args:
+        page_props: Parsed pageProps dict from __NEXT_DATA__.
+        language: Preferred language code (e.g. 'en', 'de').
+
+    Returns:
+        A transcript download URL, or None.
+    """
+    lang_upper = language.upper() if language else None
+
+    # The EP page stores related content (transcripts, shotlists) in various
+    # possible locations within pageProps. Search broadly.
+    candidates = []
+
+    # Strategy 1: Look for relatedItems / relatedContent / documents
+    for key in (
+        "relatedItems",
+        "relatedContent",
+        "documents",
+        "attachments",
+        "related",
+    ):
+        items = page_props.get(key, [])
+        if isinstance(items, list):
+            candidates.extend(items)
+
+    # Strategy 2: Look inside mediaItemV2 for related content
+    media_v2 = page_props.get("mediaItemV2", {})
+    for key in (
+        "relatedItems",
+        "relatedContent",
+        "documents",
+        "attachments",
+        "related",
+    ):
+        items = media_v2.get(key, [])
+        if isinstance(items, list):
+            candidates.extend(items)
+
+    # Strategy 3: Recursively search pageProps for any .srt URLs
+    srt_urls = _find_srt_urls(page_props)
+
+    # Filter candidates for SRT transcript entries
+    best_url = None
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        # Check for SRT format indicators
+        item_url = item.get("url", "") or item.get("downloadUrl", "") or item.get("href", "")
+        item_format = str(item.get("format", "") or item.get("mimeType", "")).lower()
+        item_type = str(item.get("type", "") or item.get("category", "")).lower()
+
+        is_srt = ".srt" in item_url.lower() or "srt" in item_format or "subrip" in item_format
+        item_title = str(item.get("title", "")).lower()
+        is_transcript = "transcript" in item_type or "transcript" in item_title
+
+        if is_srt or is_transcript:
+            if lang_upper and lang_upper in item_url.upper():
+                return item_url  # Exact language match
+            if not best_url:
+                best_url = item_url
+
+    if best_url:
+        return best_url
+
+    # Fall back to any .srt URL found in the page data
+    if srt_urls:
+        if lang_upper:
+            for srt_url in srt_urls:
+                if lang_upper in srt_url.upper():
+                    return srt_url
+        return srt_urls[0]
+
+    return None
+
+
+def _find_srt_urls(obj, depth=0):
+    """Recursively find .srt URLs in a nested data structure."""
+    if depth > 10:
+        return []
+    urls = []
+    if isinstance(obj, str):
+        if ".srt" in obj.lower() and ("http" in obj.lower() or obj.startswith("/")):
+            urls.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            urls.extend(_find_srt_urls(v, depth + 1))
+    elif isinstance(obj, list):
+        for item in obj:
+            urls.extend(_find_srt_urls(item, depth + 1))
+    return urls
+
+
+def parse_srt(srt_text):
+    """Parse SRT subtitle text into a list of segment dicts.
+
+    Args:
+        srt_text: Raw SRT file content.
+
+    Returns:
+        List of dicts with keys: start (float seconds), end (float seconds),
+        text (str).
+    """
+    segments = []
+    blocks = re.split(r"\n\s*\n", srt_text.strip())
+    for block in blocks:
+        lines = block.strip().split("\n")
+        if len(lines) < 2:
+            continue
+        # Find the timestamp line (contains " --> ")
+        ts_line = None
+        text_start = 0
+        for i, line in enumerate(lines):
+            if " --> " in line:
+                ts_line = line
+                text_start = i + 1
+                break
+        if not ts_line:
+            continue
+        parts = ts_line.split(" --> ")
+        if len(parts) != 2:
+            continue
+        start = _parse_srt_timestamp(parts[0].strip())
+        end = _parse_srt_timestamp(parts[1].strip())
+        if start is None or end is None:
+            continue
+        text = " ".join(line.strip() for line in lines[text_start:] if line.strip())
+        if text:
+            segments.append({"start": start, "end": end, "text": text})
+    return segments
+
+
+def _parse_srt_timestamp(ts):
+    """Parse an SRT timestamp like '00:01:23,456' into seconds (float)."""
+    # Accept both comma and dot as decimal separator
+    ts = ts.replace(",", ".")
+    match = re.match(r"(\d+):(\d+):(\d+)\.(\d+)", ts)
+    if not match:
+        # Try without milliseconds
+        match = re.match(r"(\d+):(\d+):(\d+)", ts)
+        if not match:
+            return None
+        h, m, s = match.groups()
+        return int(h) * 3600 + int(m) * 60 + int(s)
+    h, m, s, ms = match.groups()
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, "0")[:3]) / 1000
+
+
+def download_transcript(url, language=None):
+    """Download an official EP transcript for a video clip URL.
+
+    Fetches the EP multimedia page, finds the transcript SRT download URL
+    from the ``__NEXT_DATA__`` metadata, downloads it, and parses into
+    segment dicts compatible with the rest of the pipeline.
+
+    Args:
+        url: EP multimedia video clip URL.
+        language: Preferred transcript language (e.g. 'en'). If None, uses
+                  the first available transcript.
+
+    Returns:
+        List of segment dicts (start, end, text), or None if no transcript
+        is available.
+    """
+    print("Looking for EP transcript...", file=sys.stderr)
+
+    transcript_url = _resolve_transcript_url(url, language=language)
+    if not transcript_url:
+        print("No transcript found on EP multimedia page.", file=sys.stderr)
+        return None
+
+    # Make relative URLs absolute
+    if transcript_url.startswith("/"):
+        transcript_url = EP_MULTIMEDIA_API_URL + transcript_url
+
+    print(f"Downloading transcript from: {transcript_url[:100]}...", file=sys.stderr)
+    try:
+        resp = requests.get(
+            transcript_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Could not download transcript: {e}", file=sys.stderr)
+        return None
+
+    segments = parse_srt(resp.text)
+    if segments:
+        print(f"Downloaded transcript: {len(segments)} segments", file=sys.stderr)
+    else:
+        print("Transcript downloaded but could not be parsed.", file=sys.stderr)
+        return None
+
+    return segments
 
 
 def _resolve_stream_info(url, audio_track=None):
