@@ -10,6 +10,8 @@
 # Install (dev)
 pip install -e ".[dev]"
 
+# Easy mode (Windows): double-click transcribe.bat — interactive prompts for URL, format, model
+
 # Run (simple mode — single track, legacy behavior)
 video-transcriber <EP_URL>
 video-transcriber <EP_URL> -o out.srt --format srt --model small --language en
@@ -19,6 +21,9 @@ video-transcriber <EP_URL> --mode auto --model large-v3
 
 # Run with filler/repetition cleanup
 video-transcriber <EP_URL> --clean
+
+# Export to Word document
+video-transcriber <EP_URL> --format docx -o transcript.docx
 
 # Select specific audio track (e.g. DE interpreter channel)
 video-transcriber <EP_URL> --audio-track de
@@ -35,13 +40,15 @@ ruff format --check src/ tests/
 
 ```
 src/video_transcriber/
-├── cli.py           # Argument parsing, output formatting (txt/srt/vtt), main() orchestration
+├── cli.py           # Argument parsing, output formatting (txt/srt/vtt/docx), main() orchestration
 ├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV
 ├── transcriber.py   # faster-whisper transcription with CUDA fallback, VAD, per-segment language detection
 ├── postprocess.py   # Filler word removal (DE+EN) and consecutive repetition cleanup
 ├── pipeline.py      # Multi-track orchestration: original floor + DE interpreter merging
 ├── __init__.py      # Package version
 └── __main__.py      # python -m entry point
+
+transcribe.bat           # Interactive Windows batch script (prompts for URL, format, model)
 
 tests/
 ├── test_cli.py          # Timestamp formatting, argument parsing, output format tests
@@ -56,7 +63,7 @@ tests/
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
-5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, or WebVTT. Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline).
+5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, WebVTT, or Word (.docx). Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline). The docx format shows video duration at the top instead of per-segment timestamps.
 
 ## CLI Options
 
@@ -67,7 +74,7 @@ tests/
 | `--audio-track <code>` | Select audio track: `or` (original floor), `de`/`en`/`fr`/... (interpreter) |
 | `--model <size>` | Whisper model: tiny, base (default), small, medium, large-v3 |
 | `--language <code>` | Force language (default: auto-detect) |
-| `--format txt\|srt\|vtt` | Output format (default: txt) |
+| `--format txt\|srt\|vtt\|docx` | Output format (default: txt). docx requires `-o` and shows duration instead of timestamps |
 | `-o <path>` | Output file (default: stdout) |
 | `--keep-audio` | Keep downloaded audio after transcription |
 | `--audio-dir <dir>` | Directory for audio files (default: temp) |
@@ -79,6 +86,7 @@ tests/
 - **requests** — HTTP for EP glcloud API
 - **tqdm** — transcription progress bar
 - **lingua-language-detector** — per-segment language detection
+- **python-docx** — Word document output
 - **ffmpeg** — system dependency, must be on PATH
 
 ## Key Details
