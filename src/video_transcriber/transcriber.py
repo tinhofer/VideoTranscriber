@@ -1,6 +1,9 @@
 """Transcribe audio using faster-whisper."""
 
+import sys
+
 from faster_whisper import WhisperModel
+from tqdm import tqdm
 
 
 def transcribe_audio(audio_path, model_size="base", language=None, task="transcribe"):
@@ -40,21 +43,23 @@ def transcribe_audio(audio_path, model_size="base", language=None, task="transcr
     )
 
     if language is None:
-        import sys
-
         print(
             f"Detected language: {info.language} (probability: {info.language_probability:.2f})",
             file=sys.stderr,
         )
 
+    duration = info.duration
     segments = []
-    for segment in segments_iter:
-        segments.append(
-            {
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text,
-            }
-        )
+    with tqdm(total=duration, unit="s", desc="Transcribing", file=sys.stderr,
+              bar_format="{desc}: {percentage:3.0f}%|{bar}| {n:.0f}/{total:.0f}s [{elapsed}<{remaining}]") as pbar:
+        for segment in segments_iter:
+            segments.append(
+                {
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                }
+            )
+            pbar.update(segment.end - pbar.n)
 
     return segments
