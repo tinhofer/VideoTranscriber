@@ -5,20 +5,18 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlencode, urlparse, urlunparse, parse_qs as stdlib_parse_qs
+from urllib.parse import parse_qs as stdlib_parse_qs
+from urllib.parse import urlencode, urlparse, urlunparse
 
 import requests
 import yt_dlp
-
 
 EP_URL_PATTERN = re.compile(
     r"https?://multimedia\.europarl\.europa\.eu/(?P<lang>\w+)/webstreaming/"
     r"(?:[^_]*_)?(?P<id>[\w-]+)"
 )
 
-GLCLOUD_CONTENT_URL = (
-    "https://control.eup.glcloud.eu/content-manager/content-page/{video_id}"
-)
+GLCLOUD_CONTENT_URL = "https://control.eup.glcloud.eu/content-manager/content-page/{video_id}"
 
 
 def extract_meeting_ref(url):
@@ -37,12 +35,18 @@ def extract_meeting_ref(url):
     return None
 
 
-def _resolve_stream_info(url):
+def _resolve_stream_info(url, audio_track=None):
     """Resolve stream info from the EP's new glcloud infrastructure.
 
     The EP migrated from connectedviews.eu to control.eup.glcloud.eu in
     early 2025. This function fetches the content page and extracts the
     HLS player URL and metadata from the embedded ng-state JSON.
+
+    Args:
+        url: EP webstreaming URL.
+        audio_track: Audio track language code (e.g. 'or' for original floor,
+                     'de' for German interpreter, 'en' for English interpreter).
+                     If None, uses the URL's language parameter.
 
     Returns:
         dict with keys: hls_url, start_time, end_time, final_vod, title,
@@ -55,9 +59,11 @@ def _resolve_stream_info(url):
     lang = match.group("lang") or "en"
     video_id = match.group("id")
 
+    audio = audio_track if audio_track else lang
+
     params = {
         "lang": lang,
-        "audio": lang,
+        "audio": audio,
         "autoplay": "true",
         "logo": "false",
         "muted": "false",
@@ -102,8 +108,7 @@ def _resolve_stream_info(url):
 
     if not stream_info:
         raise RuntimeError(
-            "Could not find stream info in EP metadata. "
-            "The stream may not be available yet."
+            "Could not find stream info in EP metadata. The stream may not be available yet."
         )
 
     player_url = stream_info.get("playerUrl")
@@ -149,7 +154,7 @@ def _build_hls_url(info):
     return hls_url
 
 
-def download_audio(url, output_dir=None):
+def download_audio(url, output_dir=None, audio_track=None):
     """Download audio from an EP webstreaming URL.
 
     First tries to resolve the HLS stream URL via the EP's new glcloud
@@ -160,6 +165,8 @@ def download_audio(url, output_dir=None):
         url: EP webstreaming URL.
         output_dir: Directory to save the audio file.
                     If None, uses a temp directory.
+        audio_track: Audio track language code (e.g. 'or' for original floor,
+                     'de' for German interpreter). None uses the URL's language.
 
     Returns:
         Path to the downloaded audio file (WAV, 16kHz mono).
@@ -171,6 +178,10 @@ def download_audio(url, output_dir=None):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     meeting_ref = extract_meeting_ref(url) or "audio"
+    # Append track suffix to filename to avoid overwriting when downloading
+    # multiple tracks for the same meeting.
+    if audio_track:
+        meeting_ref = f"{meeting_ref}_{audio_track}"
     output_template = str(output_dir / meeting_ref)
 
     # Try to resolve the HLS URL from the new EP infrastructure
@@ -178,7 +189,7 @@ def download_audio(url, output_dir=None):
     extra_ydl_opts = {}
     resolved_hls = False
     try:
-        info = _resolve_stream_info(url)
+        info = _resolve_stream_info(url, audio_track=audio_track)
         if info:
             hls_url = _build_hls_url(info)
             print(f"Resolved HLS stream URL: {hls_url[:120]}...", file=sys.stderr)
@@ -202,20 +213,26 @@ def download_audio(url, output_dir=None):
         wav_path = output_dir / f"{meeting_ref}.wav"
         try:
             import subprocess
+
             print(
-                "Downloading audio with ffmpeg (this may take a while "
-                "for long meetings)...",
+                "Downloading audio with ffmpeg (this may take a while for long meetings)...",
                 file=sys.stderr,
             )
             ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-headers", "Referer: https://control.eup.glcloud.eu/\r\n",
-                "-i", download_url,
-                "-vn",          # no video
-                "-ar", "16000", # 16kHz sample rate
-                "-ac", "1",     # mono
-                "-c:a", "pcm_s16le",  # WAV format
-                "-stats",       # show progress stats
+                "ffmpeg",
+                "-y",
+                "-headers",
+                "Referer: https://control.eup.glcloud.eu/\r\n",
+                "-i",
+                download_url,
+                "-vn",  # no video
+                "-ar",
+                "16000",  # 16kHz sample rate
+                "-ac",
+                "1",  # mono
+                "-c:a",
+                "pcm_s16le",  # WAV format
+                "-stats",  # show progress stats
                 str(wav_path),
             ]
             # Don't capture output — let ffmpeg progress show in terminal
@@ -228,8 +245,7 @@ def download_audio(url, output_dir=None):
                 return str(wav_path)
             else:
                 print(
-                    f"ffmpeg failed (exit {result.returncode}), "
-                    f"trying yt-dlp...",
+                    f"ffmpeg failed (exit {result.returncode}), trying yt-dlp...",
                     file=sys.stderr,
                 )
         except FileNotFoundError:

@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from video_transcriber.downloader import download_audio
+from video_transcriber.postprocess import clean_segments
 from video_transcriber.transcriber import transcribe_audio
 
 
@@ -58,6 +59,29 @@ def parse_args(argv=None):
         action="store_true",
         help="Keep the downloaded audio file after transcription",
     )
+    parser.add_argument(
+        "--mode",
+        default="simple",
+        choices=["simple", "auto"],
+        help=(
+            "Transcription mode. 'simple': single-track transcription (legacy). "
+            "'auto': multi-language pipeline — keeps EN/DE from original floor audio, "
+            "uses DE interpreter track for other languages (default: simple)"
+        ),
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove filler words and repetitions from the transcript",
+    )
+    parser.add_argument(
+        "--audio-track",
+        default=None,
+        help=(
+            "Audio track to download: 'or' for original floor, "
+            "'de'/'en'/'fr'/... for interpreter channel (default: URL language)"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -85,7 +109,10 @@ def format_segments(segments, fmt):
     if fmt == "txt":
         for segment in segments:
             ts = format_timestamp(segment["start"]).split(",")[0]
-            lines.append(f"[{ts}] {segment['text'].strip()}")
+            lang_tag = ""
+            if "language" in segment:
+                lang_tag = f" [{segment['language'].upper()}]"
+            lines.append(f"[{ts}]{lang_tag} {segment['text'].strip()}")
     elif fmt == "srt":
         for i, segment in enumerate(segments, 1):
             start = format_timestamp(segment["start"])
@@ -109,9 +136,19 @@ def format_segments(segments, fmt):
 def main(argv=None):
     args = parse_args(argv)
 
+    if args.mode == "auto":
+        _run_auto_mode(args)
+    else:
+        _run_simple_mode(args)
+
+
+def _run_simple_mode(args):
+    """Original single-track transcription."""
     try:
         print(f"Downloading audio from: {args.url}", file=sys.stderr)
-        audio_path = download_audio(args.url, output_dir=args.audio_dir)
+        audio_path = download_audio(
+            args.url, output_dir=args.audio_dir, audio_track=args.audio_track
+        )
         print(f"Audio saved to: {audio_path}", file=sys.stderr)
     except Exception as e:
         print(f"Error downloading audio: {e}", file=sys.stderr)
@@ -132,6 +169,34 @@ def main(argv=None):
         print(f"Error during transcription: {e}", file=sys.stderr)
         sys.exit(1)
 
+    if args.clean:
+        segments = clean_segments(segments)
+
+    _output_results(segments, args)
+
+    if not args.keep_audio and not args.audio_dir:
+        _cleanup_file(audio_path)
+
+
+def _run_auto_mode(args):
+    """Multi-language pipeline: original EN/DE + DE interpreter for other languages."""
+    from video_transcriber.pipeline import run_pipeline
+
+    try:
+        segments = run_pipeline(
+            args.url,
+            model_size=args.model,
+            output_dir=args.audio_dir,
+        )
+    except Exception as e:
+        print(f"Error in auto pipeline: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    _output_results(segments, args)
+
+
+def _output_results(segments, args):
+    """Format and output the transcription segments."""
     output = format_segments(segments, args.format)
 
     if args.output:
@@ -141,13 +206,15 @@ def main(argv=None):
     else:
         print(output)
 
-    if not args.keep_audio and not args.audio_dir:
-        import os
 
-        try:
-            os.unlink(audio_path)
-        except OSError:
-            pass
+def _cleanup_file(path):
+    """Remove a file, ignoring errors."""
+    import os
+
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

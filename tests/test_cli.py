@@ -2,11 +2,15 @@
 
 from video_transcriber.cli import format_segments, format_timestamp, parse_args
 
-
 SAMPLE_SEGMENTS = [
     {"start": 0.0, "end": 3.5, "text": " Hello everyone."},
     {"start": 3.5, "end": 8.2, "text": " Welcome to today's committee meeting."},
     {"start": 10.0, "end": 15.7, "text": " Let us begin with the first item on the agenda."},
+]
+
+SAMPLE_SEGMENTS_WITH_LANG = [
+    {"start": 0.0, "end": 3.5, "text": " Hello everyone.", "language": "en"},
+    {"start": 3.5, "end": 8.2, "text": " Willkommen.", "language": "de"},
 ]
 
 
@@ -18,25 +22,30 @@ def test_parse_args_minimal():
     assert args.task == "transcribe"
     assert args.format == "txt"
     assert args.output is None
+    assert args.mode == "simple"
+    assert args.clean is False
+    assert args.audio_track is None
 
 
 def test_parse_args_full():
-    args = parse_args([
-        "https://example.com/video",
-        "-o",
-        "out.srt",
-        "--model",
-        "large-v3",
-        "--language",
-        "fr",
-        "--task",
-        "translate",
-        "--format",
-        "srt",
-        "--keep-audio",
-        "--audio-dir",
-        "/tmp/audio",
-    ])
+    args = parse_args(
+        [
+            "https://example.com/video",
+            "-o",
+            "out.srt",
+            "--model",
+            "large-v3",
+            "--language",
+            "fr",
+            "--task",
+            "translate",
+            "--format",
+            "srt",
+            "--keep-audio",
+            "--audio-dir",
+            "/tmp/audio",
+        ]
+    )
     assert args.output == "out.srt"
     assert args.model == "large-v3"
     assert args.language == "fr"
@@ -44,6 +53,22 @@ def test_parse_args_full():
     assert args.format == "srt"
     assert args.keep_audio is True
     assert args.audio_dir == "/tmp/audio"
+
+
+def test_parse_args_new_options():
+    args = parse_args(
+        [
+            "https://example.com/video",
+            "--mode",
+            "auto",
+            "--clean",
+            "--audio-track",
+            "de",
+        ]
+    )
+    assert args.mode == "auto"
+    assert args.clean is True
+    assert args.audio_track == "de"
 
 
 def test_format_timestamp():
@@ -58,6 +83,13 @@ def test_format_segments_txt():
     assert len(lines) == 3
     assert lines[0] == "[00:00:00] Hello everyone."
     assert lines[1] == "[00:00:03] Welcome to today's committee meeting."
+
+
+def test_format_segments_txt_with_language():
+    output = format_segments(SAMPLE_SEGMENTS_WITH_LANG, "txt")
+    lines = output.split("\n")
+    assert "[EN]" in lines[0]
+    assert "[DE]" in lines[1]
 
 
 def test_format_segments_srt():
