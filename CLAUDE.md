@@ -95,6 +95,7 @@ tests/
 - Entry point: `video-transcriber` → `video_transcriber.cli:main`
 - Ruff config: line-length=100, rules E/F/W/I
 - All user-facing status goes to stderr; transcript output goes to stdout (allows piping)
+- Output files are auto-numbered to avoid overwriting: if `transcript.docx` exists, the next becomes `transcript_2.docx`, `transcript_3.docx`, etc. Applies to all formats with `-o`.
 - Supported EP URL formats:
   - Webstreaming: `https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL`
   - Video clips: `https://multimedia.europarl.europa.eu/en/video/some-title_I242316`
