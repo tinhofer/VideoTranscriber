@@ -36,7 +36,7 @@ ruff format --check src/ tests/
 ```
 src/video_transcriber/
 ├── cli.py           # Argument parsing, output formatting (txt/srt/vtt), main() orchestration
-├── downloader.py    # EP glcloud API resolution, ffmpeg/yt-dlp audio download → 16kHz mono WAV
+├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV
 ├── transcriber.py   # faster-whisper transcription with CUDA fallback, VAD, per-segment language detection
 ├── postprocess.py   # Filler word removal (DE+EN) and consecutive repetition cleanup
 ├── pipeline.py      # Multi-track orchestration: original floor + DE interpreter merging
@@ -52,7 +52,7 @@ tests/
 
 ## Architecture
 
-1. **Download** (`downloader.py`): Accepts both `/webstreaming/` and `/video/` EP URLs. Resolves HLS stream from EP's glcloud API (`control.eup.glcloud.eu`), downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter).
+1. **Download** (`downloader.py`): Accepts both `/webstreaming/` and `/video/` EP URLs. Two resolution paths: **Webstreaming** URLs resolve HLS streams from EP's glcloud API (`control.eup.glcloud.eu`). **Video clip** URLs (e.g. `_I242316`) are resolved by scraping the EP multimedia page (a Next.js app) and extracting direct MP4 URLs from the `__NEXT_DATA__` JSON blob — these are hosted on Watchity CDN (`cdn-mmc.watchity.net`). Downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter). Note: `audio_track` only applies to webstreaming URLs; video clips have a single audio track.
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
@@ -92,3 +92,4 @@ tests/
   - Video clips: `https://multimedia.europarl.europa.eu/en/video/some-title_I242316`
 - The glcloud API replaced the older connectedviews.eu infrastructure in early 2025
 - EP audio tracks: The glcloud API `audio` parameter selects interpreter channels; the EP website shows these under "Select Audio Track"
+- Video clips vs webstreaming: Two different hosting backends. Webstreaming events use glcloud HLS streams. Video clips (archived content with `/video/..._I<id>` URLs) use Watchity CDN with direct MP4 files — the glcloud API returns 404 for these. The EP multimedia site is a Next.js app; video clip metadata (including MP4 URLs at multiple quality levels: ORIGINAL, FHD, HD, SD) is embedded in `<script id="__NEXT_DATA__">` under `pageProps.mediaItemV2.mediaAssets`.
