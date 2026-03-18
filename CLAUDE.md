@@ -10,6 +10,8 @@
 # Install (dev)
 pip install -e ".[dev]"
 
+# Easy mode (Windows): double-click transcribe.bat — interactive prompts for URL, format, model
+
 # Run (simple mode — single track, legacy behavior)
 video-transcriber <EP_URL>
 video-transcriber <EP_URL> -o out.srt --format srt --model small --language en
@@ -20,8 +22,14 @@ video-transcriber <EP_URL> --mode auto --model large-v3
 # Run with filler/repetition cleanup
 video-transcriber <EP_URL> --clean
 
+# Export to Word document
+video-transcriber <EP_URL> --format docx -o transcript.docx
+
 # Select specific audio track (e.g. DE interpreter channel)
 video-transcriber <EP_URL> --audio-track de
+
+# Transcribe with speaker names from EP chapter data (video clips only)
+video-transcriber <EP_VIDEO_URL> --transcript --model small
 
 # Tests (use python -m pytest, not bare pytest)
 python -m pytest
@@ -35,28 +43,31 @@ ruff format --check src/ tests/
 
 ```
 src/video_transcriber/
-├── cli.py           # Argument parsing, output formatting (txt/srt/vtt), main() orchestration
-├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV
+├── cli.py           # Argument parsing, output formatting (txt/srt/vtt/md/docx), main() orchestration
+├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV, EP chapter/speaker download + SRT parsing
 ├── transcriber.py   # faster-whisper transcription with CUDA fallback, VAD, per-segment language detection
 ├── postprocess.py   # Filler word removal (DE+EN) and consecutive repetition cleanup
 ├── pipeline.py      # Multi-track orchestration: original floor + DE interpreter merging
 ├── __init__.py      # Package version
 └── __main__.py      # python -m entry point
 
+transcribe.bat           # Interactive Windows batch script (prompts for URL, format, model)
+
 tests/
 ├── test_cli.py          # Timestamp formatting, argument parsing, output format tests
-├── test_downloader.py   # Meeting reference and video clip ID extraction tests
+├── test_downloader.py   # Meeting reference extraction, SRT parsing, speaker extraction, merge tests
 ├── test_pipeline.py     # Interpreter segment matching and collection tests
 └── test_postprocess.py  # Filler removal, repetition cleanup, segment cleaning tests
 ```
 
 ## Architecture
 
-1. **Download** (`downloader.py`): Accepts both `/webstreaming/` and `/video/` EP URLs. Two resolution paths: **Webstreaming** URLs resolve HLS streams from EP's glcloud API (`control.eup.glcloud.eu`). **Video clip** URLs (e.g. `_I242316`) are resolved by scraping the EP multimedia page (a Next.js app) and extracting direct MP4 URLs from the `__NEXT_DATA__` JSON blob — these are hosted on Watchity CDN (`cdn-mmc.watchity.net`). Downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter). Note: `audio_track` only applies to webstreaming URLs; video clips have a single audio track.
+1. **Download** (`downloader.py`): Accepts both `/webstreaming/` and `/video/` EP URLs. Two resolution paths: **Webstreaming** URLs resolve HLS streams from EP's glcloud API (`control.eup.glcloud.eu`). **Video clip** URLs (e.g. `_I242316`) are resolved by scraping the EP multimedia page (a Next.js app) and extracting direct MP4 URLs from the `__NEXT_DATA__` JSON blob — these are hosted on Watchity CDN (`cdn-mmc.watchity.net`). Downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter). For webstreaming, this uses the glcloud API `audio` parameter. For video clips, ffmpeg selects the matching audio stream by ISO 639-2 language metadata (e.g. `--audio-track de` maps to stream language `ger`).
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
-5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, or WebVTT. Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline).
+5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, WebVTT, Markdown, or Word (.docx). Writes to stdout or file. Three modes: `simple` (legacy single-track), `auto` (multi-language pipeline), and `--transcript` (Whisper + EP speaker names). Speaker names appear as `[Speaker Name]` tags in txt/srt/vtt and as bold headings in md/docx. The md and docx formats show video duration at the top instead of per-segment timestamps.
+6. **EP Chapters** (`downloader.py`): The EP multimedia site provides chapter/shotlist SRT files for video clips under "Related content". These contain speaker names and timestamps (not spoken words). The `--transcript` flag downloads these, runs Whisper for the actual words, then merges speaker names into the Whisper output using time-range matching. Chapter URLs are found in the `__NEXT_DATA__` JSON blob. HTML entities in chapter text are decoded automatically.
 
 ## CLI Options
 
@@ -67,8 +78,9 @@ tests/
 | `--audio-track <code>` | Select audio track: `or` (original floor), `de`/`en`/`fr`/... (interpreter) |
 | `--model <size>` | Whisper model: tiny, base (default), small, medium, large-v3 |
 | `--language <code>` | Force language (default: auto-detect) |
-| `--format txt\|srt\|vtt` | Output format (default: txt) |
+| `--format txt\|srt\|vtt\|md\|docx` | Output format (default: txt). md and docx show duration instead of per-segment timestamps. docx requires `-o`. |
 | `-o <path>` | Output file (default: stdout) |
+| `--transcript` | Enrich Whisper output with speaker names from EP chapter data (video clips only) |
 | `--keep-audio` | Keep downloaded audio after transcription |
 | `--audio-dir <dir>` | Directory for audio files (default: temp) |
 
@@ -79,6 +91,7 @@ tests/
 - **requests** — HTTP for EP glcloud API
 - **tqdm** — transcription progress bar
 - **lingua-language-detector** — per-segment language detection
+- **python-docx** — Word document output
 - **ffmpeg** — system dependency, must be on PATH
 
 ## Key Details
@@ -87,6 +100,7 @@ tests/
 - Entry point: `video-transcriber` → `video_transcriber.cli:main`
 - Ruff config: line-length=100, rules E/F/W/I
 - All user-facing status goes to stderr; transcript output goes to stdout (allows piping)
+- Output files are auto-numbered to avoid overwriting: if `transcript.docx` exists, the next becomes `transcript_2.docx`, `transcript_3.docx`, etc. Applies to all formats with `-o`.
 - Supported EP URL formats:
   - Webstreaming: `https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL`
   - Video clips: `https://multimedia.europarl.europa.eu/en/video/some-title_I242316`
