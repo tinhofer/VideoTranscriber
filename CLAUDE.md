@@ -40,7 +40,7 @@ ruff format --check src/ tests/
 
 ```
 src/video_transcriber/
-├── cli.py           # Argument parsing, output formatting (txt/srt/vtt/docx), main() orchestration
+├── cli.py           # Argument parsing, output formatting (txt/srt/vtt/md/docx), main() orchestration
 ├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV
 ├── transcriber.py   # faster-whisper transcription with CUDA fallback, VAD, per-segment language detection
 ├── postprocess.py   # Filler word removal (DE+EN) and consecutive repetition cleanup
@@ -63,7 +63,7 @@ tests/
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
-5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, WebVTT, or Word (.docx). Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline). The docx format shows video duration at the top instead of per-segment timestamps.
+5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, WebVTT, Markdown, or Word (.docx). Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline). The md and docx formats show video duration at the top instead of per-segment timestamps.
 
 ## CLI Options
 
@@ -74,7 +74,7 @@ tests/
 | `--audio-track <code>` | Select audio track: `or` (original floor), `de`/`en`/`fr`/... (interpreter) |
 | `--model <size>` | Whisper model: tiny, base (default), small, medium, large-v3 |
 | `--language <code>` | Force language (default: auto-detect) |
-| `--format txt\|srt\|vtt\|docx` | Output format (default: txt). docx requires `-o` and shows duration instead of timestamps |
+| `--format txt\|srt\|vtt\|md\|docx` | Output format (default: txt). md and docx show duration instead of per-segment timestamps. docx requires `-o`. |
 | `-o <path>` | Output file (default: stdout) |
 | `--keep-audio` | Keep downloaded audio after transcription |
 | `--audio-dir <dir>` | Directory for audio files (default: temp) |

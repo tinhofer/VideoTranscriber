@@ -46,7 +46,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--format",
         default="txt",
-        choices=["txt", "srt", "vtt", "docx"],
+        choices=["txt", "srt", "vtt", "md", "docx"],
         help="Output format (default: txt). docx requires -o to specify output file.",
     )
     parser.add_argument(
@@ -128,6 +128,16 @@ def format_segments(segments, fmt):
             start = format_timestamp_vtt(segment["start"])
             end = format_timestamp_vtt(segment["end"])
             lines.append(f"{start} --> {end}")
+            lines.append(segment["text"].strip())
+            lines.append("")
+    elif fmt == "md":
+        lines.append("# Transcript")
+        lines.append("")
+        if segments:
+            duration = max(s["end"] for s in segments)
+            lines.append(f"*Duration: {_format_duration(duration)}*")
+            lines.append("")
+        for segment in segments:
             lines.append(segment["text"].strip())
             lines.append("")
     return "\n".join(lines)

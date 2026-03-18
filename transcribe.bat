@@ -21,13 +21,15 @@ echo Output format:
 echo   1 = txt  (plain text)
 echo   2 = srt  (subtitles)
 echo   3 = vtt  (web subtitles)
-echo   4 = docx (Word document)
+echo   4 = md   (Markdown)
+echo   5 = docx (Word document)
 set /p "FMT_CHOICE=Choose format [1]: "
 if "%FMT_CHOICE%"=="" set "FMT_CHOICE=1"
 if "%FMT_CHOICE%"=="1" set "FMT=txt"
 if "%FMT_CHOICE%"=="2" set "FMT=srt"
 if "%FMT_CHOICE%"=="3" set "FMT=vtt"
-if "%FMT_CHOICE%"=="4" set "FMT=docx"
+if "%FMT_CHOICE%"=="4" set "FMT=md"
+if "%FMT_CHOICE%"=="5" set "FMT=docx"
 
 :: Model size
 echo.
