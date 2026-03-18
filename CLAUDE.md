@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**video-transcriber** — CLI tool that transcribes European Parliament webstreaming videos. Multi-stage pipeline: download audio → transcribe with Whisper → detect languages → merge interpreter tracks → post-process → format output.
+**video-transcriber** — CLI tool that transcribes European Parliament webstreaming videos and video clips. Multi-stage pipeline: download audio → transcribe with Whisper → detect languages → merge interpreter tracks → post-process → format output.
 
 ## Quick Reference
 
@@ -45,14 +45,14 @@ src/video_transcriber/
 
 tests/
 ├── test_cli.py          # Timestamp formatting, argument parsing, output format tests
-├── test_downloader.py   # Meeting reference extraction tests
+├── test_downloader.py   # Meeting reference and video clip ID extraction tests
 ├── test_pipeline.py     # Interpreter segment matching and collection tests
 └── test_postprocess.py  # Filler removal, repetition cleanup, segment cleaning tests
 ```
 
 ## Architecture
 
-1. **Download** (`downloader.py`): Resolves HLS stream from EP's glcloud API (`control.eup.glcloud.eu`), downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter).
+1. **Download** (`downloader.py`): Accepts both `/webstreaming/` and `/video/` EP URLs. Resolves HLS stream from EP's glcloud API (`control.eup.glcloud.eu`), downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter).
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
@@ -87,6 +87,8 @@ tests/
 - Entry point: `video-transcriber` → `video_transcriber.cli:main`
 - Ruff config: line-length=100, rules E/F/W/I
 - All user-facing status goes to stderr; transcript output goes to stdout (allows piping)
-- EP URL pattern: `https://multimedia.europarl.europa.eu/en/webstreaming/<meeting-ref>`
+- Supported EP URL formats:
+  - Webstreaming: `https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL`
+  - Video clips: `https://multimedia.europarl.europa.eu/en/video/some-title_I242316`
 - The glcloud API replaced the older connectedviews.eu infrastructure in early 2025
 - EP audio tracks: The glcloud API `audio` parameter selects interpreter channels; the EP website shows these under "Select Audio Track"
