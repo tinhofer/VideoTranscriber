@@ -459,6 +459,68 @@ def merge_speakers_into_segments(whisper_segments, chapter_segments):
     return whisper_segments
 
 
+# Map of short audio-track codes to ISO 639-2/B language codes used by ffmpeg/MP4
+_AUDIO_TRACK_TO_ISO639_2 = {
+    "or": "qaa",  # original floor (unlisted/undefined language)
+    "en": "eng",
+    "de": "ger",
+    "fr": "fre",
+    "es": "spa",
+    "it": "ita",
+    "pt": "por",
+    "nl": "dut",
+    "pl": "pol",
+    "ro": "rum",
+    "cs": "cze",
+    "el": "gre",
+    "hu": "hun",
+    "sv": "swe",
+    "da": "dan",
+    "fi": "fin",
+    "bg": "bul",
+    "hr": "hrv",
+    "sk": "slo",
+    "sl": "slv",
+    "et": "est",
+    "lv": "lav",
+    "lt": "lit",
+    "ga": "gle",
+    "mt": "mlt",
+}
+
+
+def _build_audio_stream_map(audio_track):
+    """Build ffmpeg -map arguments for audio track selection in video clips.
+
+    Video clips on Watchity CDN can have multiple audio streams tagged with
+    ISO 639-2 language codes (e.g. ``qaa`` for original, ``eng``, ``ger``).
+    This function maps the user-facing short code (``or``, ``en``, ``de``)
+    to the correct ffmpeg stream metadata selector.
+
+    Args:
+        audio_track: Short language code (e.g. ``'de'``) or None.
+
+    Returns:
+        List of ffmpeg arguments, e.g. ``['-map', '0:m:language:ger']``
+        or empty list for default behavior.
+    """
+    if not audio_track:
+        return []
+    iso_code = _AUDIO_TRACK_TO_ISO639_2.get(audio_track)
+    if iso_code:
+        print(
+            f"Selecting audio track: {audio_track} (stream language: {iso_code})",
+            file=sys.stderr,
+        )
+        return ["-map", f"0:m:language:{iso_code}"]
+    # If not in mapping, try the code directly (user might pass ISO 639-2)
+    print(
+        f"Selecting audio track: {audio_track} (using as stream language directly)",
+        file=sys.stderr,
+    )
+    return ["-map", f"0:m:language:{audio_track}"]
+
+
 def _resolve_stream_info(url, audio_track=None):
     """Resolve stream info from the EP's new glcloud infrastructure.
 
@@ -645,6 +707,9 @@ def download_audio(url, output_dir=None, audio_track=None):
         try:
             import subprocess
 
+            # Build stream selection for audio track
+            stream_map = _build_audio_stream_map(audio_track)
+
             print(
                 "Downloading video clip with ffmpeg (converting to WAV)...",
                 file=sys.stderr,
@@ -654,6 +719,7 @@ def download_audio(url, output_dir=None, audio_track=None):
                 "-y",
                 "-i",
                 download_url,
+                *stream_map,
                 "-vn",  # no video
                 "-ar",
                 "16000",  # 16kHz sample rate

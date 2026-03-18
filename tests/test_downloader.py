@@ -1,6 +1,7 @@
 """Tests for the downloader module."""
 
 from video_transcriber.downloader import (
+    _build_audio_stream_map,
     _extract_transcript_url,
     _find_srt_urls,
     _parse_srt_timestamp,
@@ -276,3 +277,35 @@ def test_merge_speakers_no_match():
     whisper = [{"start": 0.0, "end": 5.0, "text": "Before any speaker."}]
     result = merge_speakers_into_segments(whisper, chapters)
     assert "speaker" not in result[0]
+
+
+# --- Audio stream map tests ---
+
+
+def test_build_audio_stream_map_none():
+    assert _build_audio_stream_map(None) == []
+
+
+def test_build_audio_stream_map_original():
+    result = _build_audio_stream_map("or")
+    assert result == ["-map", "0:m:language:qaa"]
+
+
+def test_build_audio_stream_map_german():
+    result = _build_audio_stream_map("de")
+    assert result == ["-map", "0:m:language:ger"]
+
+
+def test_build_audio_stream_map_english():
+    result = _build_audio_stream_map("en")
+    assert result == ["-map", "0:m:language:eng"]
+
+
+def test_build_audio_stream_map_french():
+    result = _build_audio_stream_map("fr")
+    assert result == ["-map", "0:m:language:fre"]
+
+
+def test_build_audio_stream_map_unknown_passthrough():
+    result = _build_audio_stream_map("ger")
+    assert result == ["-map", "0:m:language:ger"]
