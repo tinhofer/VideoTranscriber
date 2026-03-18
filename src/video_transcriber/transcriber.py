@@ -15,13 +15,20 @@ def transcribe_audio(audio_path, model_size="base", language=None, task="transcr
     Returns:
         List of dicts with keys: start, end, text.
     """
+    # Check if CUDA libraries are actually usable before attempting GPU mode.
+    # faster-whisper uses ctranslate2 which needs cuBLAS/cuDNN DLLs at load time.
+    _use_gpu = False
     try:
-        model = WhisperModel(model_size, device="auto", compute_type="auto")
-    except Exception:
-        # CUDA not available — fall back to CPU
-        import sys
+        import ctranslate2
 
-        print("CUDA not available, using CPU for transcription.", file=sys.stderr)
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            _use_gpu = True
+    except Exception:
+        pass
+
+    if _use_gpu:
+        model = WhisperModel(model_size, device="cuda", compute_type="float16")
+    else:
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
     segments_iter, info = model.transcribe(
