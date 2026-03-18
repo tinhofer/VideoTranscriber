@@ -5,6 +5,8 @@ from video_transcriber.downloader import (
     _find_srt_urls,
     _parse_srt_timestamp,
     extract_meeting_ref,
+    merge_speakers_into_segments,
+    parse_chapter_speaker,
     parse_srt,
 )
 
@@ -191,3 +193,86 @@ def test_extract_transcript_url_fallback_to_srt_search():
 def test_extract_transcript_url_none_when_missing():
     page_props = {"mediaItemV2": {"mediaAssets": [{"type": "video", "url": "http://x.mp4"}]}}
     assert _extract_transcript_url(page_props) is None
+
+
+# --- HTML entity decoding tests ---
+
+
+def test_parse_srt_html_entities():
+    srt = (
+        "1\n00:00:01,000 --> 00:00:05,000\n"
+        "SOUNDBITE (Original), Ib&aacute;n GARC&#205;A DEL BLANCO (S&amp;D, ES), -\n"
+    )
+    segments = parse_srt(srt)
+    assert len(segments) == 1
+    assert "Ibán" in segments[0]["text"]
+    assert "GARCÍA" in segments[0]["text"]
+    assert "S&D" in segments[0]["text"]
+    assert "&amp;" not in segments[0]["text"]
+
+
+def test_parse_srt_numeric_html_entities():
+    srt = "1\n00:00:01,000 --> 00:00:02,000\nKosma Z&#321;OTOWSKI (ECR, PL)\n"
+    segments = parse_srt(srt)
+    assert "ZŁOTOWSKI" in segments[0]["text"]
+
+
+# --- Speaker parsing tests ---
+
+
+def test_parse_chapter_speaker_basic():
+    text = "SOUNDBITE (Original), Deirdre CLUNE (EPP, IE), -"
+    assert parse_chapter_speaker(text) == "Deirdre CLUNE"
+
+
+def test_parse_chapter_speaker_with_group():
+    text = "SOUNDBITE (Original), Sergey LAGODINSKY (Greens/EFA, DE), -"
+    assert parse_chapter_speaker(text) == "Sergey LAGODINSKY"
+
+
+def test_parse_chapter_speaker_end_marker():
+    assert parse_chapter_speaker("End") is None
+
+
+def test_parse_chapter_speaker_no_match():
+    assert parse_chapter_speaker("Some random text") is None
+
+
+def test_parse_chapter_speaker_decoded_entities():
+    text = "SOUNDBITE (Original), Ibán GARCÍA DEL BLANCO (S&D, ES), -"
+    assert parse_chapter_speaker(text) == "Ibán GARCÍA DEL BLANCO"
+
+
+# --- Speaker merging tests ---
+
+
+def test_merge_speakers_basic():
+    chapters = [
+        {"start": 0.0, "end": 120.0, "text": "SOUNDBITE (Original), Alice SMITH (EPP, DE), -"},
+        {"start": 120.0, "end": 240.0, "text": "SOUNDBITE (Original), Bob JONES (S&D, FR), -"},
+        {"start": 240.0, "end": 300.0, "text": "End"},
+    ]
+    whisper = [
+        {"start": 5.0, "end": 10.0, "text": "Hello from Alice."},
+        {"start": 60.0, "end": 65.0, "text": "More from Alice."},
+        {"start": 130.0, "end": 135.0, "text": "Hello from Bob."},
+    ]
+    result = merge_speakers_into_segments(whisper, chapters)
+    assert result[0]["speaker"] == "Alice SMITH"
+    assert result[1]["speaker"] == "Alice SMITH"
+    assert result[2]["speaker"] == "Bob JONES"
+
+
+def test_merge_speakers_no_chapters():
+    whisper = [{"start": 0.0, "end": 5.0, "text": "Hello."}]
+    result = merge_speakers_into_segments(whisper, [])
+    assert "speaker" not in result[0]
+
+
+def test_merge_speakers_no_match():
+    chapters = [
+        {"start": 100.0, "end": 200.0, "text": "SOUNDBITE (Original), Alice SMITH (EPP, DE), -"},
+    ]
+    whisper = [{"start": 0.0, "end": 5.0, "text": "Before any speaker."}]
+    result = merge_speakers_into_segments(whisper, chapters)
+    assert "speaker" not in result[0]

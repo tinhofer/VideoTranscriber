@@ -1,5 +1,6 @@
 """Download audio from European Parliament webstreaming and video URLs."""
 
+import html as html_mod
 import json
 import re
 import sys
@@ -316,6 +317,8 @@ def parse_srt(srt_text):
         if start is None or end is None:
             continue
         text = " ".join(line.strip() for line in lines[text_start:] if line.strip())
+        # Decode HTML entities (EP transcripts contain &amp;, &#321;, etc.)
+        text = html_mod.unescape(text)
         if text:
             segments.append({"start": start, "end": end, "text": text})
     return segments
@@ -337,34 +340,55 @@ def _parse_srt_timestamp(ts):
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, "0")[:3]) / 1000
 
 
-def download_transcript(url, language=None):
-    """Download an official EP transcript for a video clip URL.
+def parse_chapter_speaker(text):
+    """Extract speaker name from an EP chapter/shotlist entry.
 
-    Fetches the EP multimedia page, finds the transcript SRT download URL
-    from the ``__NEXT_DATA__`` metadata, downloads it, and parses into
-    segment dicts compatible with the rest of the pipeline.
+    EP chapter SRT entries have this format:
+        ``SOUNDBITE (Original), Deirdre CLUNE (EPP, IE), -``
+        ``SOUNDBITE (Original), Sergey LAGODINSKY (Greens/EFA, DE), -``
+        ``End``
+
+    Args:
+        text: The text content of a chapter SRT segment.
+
+    Returns:
+        Speaker name (str) or None if not a SOUNDBITE entry.
+    """
+    # Match: SOUNDBITE (...), <Speaker Name> (<Group>, <Country>)
+    match = re.match(
+        r"SOUNDBITE\s*\([^)]*\),\s*(.+?)\s*\([^)]+,\s*[A-Z]{2}\)",
+        text,
+    )
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def download_chapters(url, language=None):
+    """Download the EP chapter/shotlist SRT for a video clip URL.
+
+    The EP multimedia site provides chapter lists as SRT files. These
+    contain speaker names and timestamps but not the spoken words.
 
     Args:
         url: EP multimedia video clip URL.
-        language: Preferred transcript language (e.g. 'en'). If None, uses
-                  the first available transcript.
+        language: Preferred language (e.g. 'en').
 
     Returns:
-        List of segment dicts (start, end, text), or None if no transcript
-        is available.
+        List of segment dicts (start, end, text), or None if not available.
     """
-    print("Looking for EP transcript...", file=sys.stderr)
+    print("Looking for EP chapter data...", file=sys.stderr)
 
     transcript_url = _resolve_transcript_url(url, language=language)
     if not transcript_url:
-        print("No transcript found on EP multimedia page.", file=sys.stderr)
+        print("No chapter data found on EP multimedia page.", file=sys.stderr)
         return None
 
     # Make relative URLs absolute
     if transcript_url.startswith("/"):
         transcript_url = EP_MULTIMEDIA_API_URL + transcript_url
 
-    print(f"Downloading transcript from: {transcript_url[:100]}...", file=sys.stderr)
+    print(f"Downloading chapters from: {transcript_url[:100]}...", file=sys.stderr)
     try:
         resp = requests.get(
             transcript_url,
@@ -379,17 +403,60 @@ def download_transcript(url, language=None):
         )
         resp.raise_for_status()
     except Exception as e:
-        print(f"Could not download transcript: {e}", file=sys.stderr)
+        print(f"Could not download chapters: {e}", file=sys.stderr)
         return None
 
     segments = parse_srt(resp.text)
     if segments:
-        print(f"Downloaded transcript: {len(segments)} segments", file=sys.stderr)
+        print(f"Downloaded chapters: {len(segments)} entries", file=sys.stderr)
     else:
-        print("Transcript downloaded but could not be parsed.", file=sys.stderr)
+        print("Chapter data downloaded but could not be parsed.", file=sys.stderr)
         return None
 
     return segments
+
+
+def merge_speakers_into_segments(whisper_segments, chapter_segments):
+    """Merge speaker names from EP chapters into Whisper transcription segments.
+
+    For each Whisper segment, finds the chapter entry whose time range
+    contains the segment's start time, extracts the speaker name, and
+    adds it as a ``speaker`` field.
+
+    Args:
+        whisper_segments: List of segment dicts from Whisper (start, end, text).
+        chapter_segments: List of chapter dicts from EP SRT (start, end, text).
+
+    Returns:
+        The whisper_segments list with ``speaker`` fields added where possible.
+    """
+    if not chapter_segments:
+        return whisper_segments
+
+    # Build speaker timeline: list of (start, end, speaker_name)
+    speaker_ranges = []
+    for i, ch in enumerate(chapter_segments):
+        speaker = parse_chapter_speaker(ch["text"])
+        if not speaker:
+            continue
+        # Chapter end time: use the next chapter's start, or this chapter's end
+        if i + 1 < len(chapter_segments):
+            end = chapter_segments[i + 1]["start"]
+        else:
+            end = ch["end"]
+        speaker_ranges.append((ch["start"], end, speaker))
+
+    if not speaker_ranges:
+        return whisper_segments
+
+    for seg in whisper_segments:
+        seg_mid = (seg["start"] + seg["end"]) / 2
+        for rng_start, rng_end, speaker in speaker_ranges:
+            if rng_start <= seg_mid < rng_end:
+                seg["speaker"] = speaker
+                break
+
+    return whisper_segments
 
 
 def _resolve_stream_info(url, audio_track=None):

@@ -3,7 +3,11 @@
 import argparse
 import sys
 
-from video_transcriber.downloader import download_audio, download_transcript
+from video_transcriber.downloader import (
+    download_audio,
+    download_chapters,
+    merge_speakers_into_segments,
+)
 from video_transcriber.postprocess import clean_segments
 from video_transcriber.transcriber import transcribe_audio
 
@@ -86,8 +90,9 @@ def parse_args(argv=None):
         "--transcript",
         action="store_true",
         help=(
-            "Download the official EP transcript (SRT) instead of running Whisper. "
-            "Only available for video clips that have a transcript on the EP site."
+            "Enrich Whisper transcription with speaker names from the EP website. "
+            "Downloads the EP chapter list (who speaks when), runs Whisper for the "
+            "actual words, then merges speaker names into the output."
         ),
     )
     return parser.parse_args(argv)
@@ -111,23 +116,37 @@ def format_timestamp_vtt(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
+def _speaker_prefix(segment):
+    """Return a speaker tag like '[Deirdre CLUNE] ' if the segment has a speaker."""
+    speaker = segment.get("speaker")
+    if speaker:
+        return f"[{speaker}] "
+    return ""
+
+
 def format_segments(segments, fmt):
     """Format transcription segments into the requested output format."""
     lines = []
     if fmt == "txt":
+        prev_speaker = None
         for segment in segments:
             ts = format_timestamp(segment["start"]).split(",")[0]
             lang_tag = ""
             if "language" in segment:
                 lang_tag = f" [{segment['language'].upper()}]"
-            lines.append(f"[{ts}]{lang_tag} {segment['text'].strip()}")
+            speaker = segment.get("speaker")
+            speaker_tag = ""
+            if speaker and speaker != prev_speaker:
+                speaker_tag = f" [{speaker}]"
+                prev_speaker = speaker
+            lines.append(f"[{ts}]{lang_tag}{speaker_tag} {segment['text'].strip()}")
     elif fmt == "srt":
         for i, segment in enumerate(segments, 1):
             start = format_timestamp(segment["start"])
             end = format_timestamp(segment["end"])
             lines.append(str(i))
             lines.append(f"{start} --> {end}")
-            lines.append(segment["text"].strip())
+            lines.append(f"{_speaker_prefix(segment)}{segment['text'].strip()}")
             lines.append("")
     elif fmt == "vtt":
         lines.append("WEBVTT")
@@ -136,7 +155,7 @@ def format_segments(segments, fmt):
             start = format_timestamp_vtt(segment["start"])
             end = format_timestamp_vtt(segment["end"])
             lines.append(f"{start} --> {end}")
-            lines.append(segment["text"].strip())
+            lines.append(f"{_speaker_prefix(segment)}{segment['text'].strip()}")
             lines.append("")
     elif fmt == "md":
         lines.append("# Transcript")
@@ -145,7 +164,13 @@ def format_segments(segments, fmt):
             duration = max(s["end"] for s in segments)
             lines.append(f"*Duration: {_format_duration(duration)}*")
             lines.append("")
+        prev_speaker = None
         for segment in segments:
+            speaker = segment.get("speaker")
+            if speaker and speaker != prev_speaker:
+                lines.append(f"**{speaker}:**")
+                lines.append("")
+                prev_speaker = speaker
             lines.append(segment["text"].strip())
             lines.append("")
     return "\n".join(lines)
@@ -199,20 +224,58 @@ def _run_simple_mode(args):
 
 
 def _run_transcript_mode(args):
-    """Download and use the official EP transcript instead of Whisper."""
-    segments = download_transcript(args.url, language=args.language)
-    if segments is None:
+    """Whisper transcription enriched with EP speaker names."""
+    # Step 1: Download chapter/speaker data from EP
+    chapters = download_chapters(args.url, language=args.language)
+    if chapters is None:
         print(
-            "No transcript available for this URL. "
-            "Try without --transcript to use Whisper instead.",
+            "No chapter data available for this URL. "
+            "Try without --transcript to run plain Whisper.",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Step 2: Download audio and transcribe with Whisper
+    try:
+        print(f"Downloading audio from: {args.url}", file=sys.stderr)
+        audio_path = download_audio(
+            args.url, output_dir=args.audio_dir, audio_track=args.audio_track
+        )
+        print(f"Audio saved to: {audio_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"Error downloading audio: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        print(
+            f"Transcribing with model '{args.model}' (language={args.language or 'auto'})...",
+            file=sys.stderr,
+        )
+        segments = transcribe_audio(
+            audio_path,
+            model_size=args.model,
+            language=args.language,
+            task=args.task,
+        )
+    except Exception as e:
+        print(f"Error during transcription: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 3: Merge speaker names into Whisper segments
+    segments = merge_speakers_into_segments(segments, chapters)
+    speaker_count = sum(1 for s in segments if "speaker" in s)
+    print(
+        f"Merged speaker names: {speaker_count}/{len(segments)} segments",
+        file=sys.stderr,
+    )
 
     if args.clean:
         segments = clean_segments(segments)
 
     _output_results(segments, args)
+
+    if not args.keep_audio and not args.audio_dir:
+        _cleanup_file(audio_path)
 
 
 def _run_auto_mode(args):
@@ -263,7 +326,16 @@ def write_docx(segments, path):
         run.font.size = Pt(10)
         run.font.color.rgb = RGBColor(128, 128, 128)
 
+    prev_speaker = None
     for segment in segments:
+        speaker = segment.get("speaker")
+        if speaker and speaker != prev_speaker:
+            p = doc.add_paragraph()
+            speaker_run = p.add_run(speaker)
+            speaker_run.bold = True
+            speaker_run.font.size = Pt(11)
+            prev_speaker = speaker
+
         text = segment["text"].strip()
         p = doc.add_paragraph()
         text_run = p.add_run(text)

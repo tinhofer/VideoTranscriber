@@ -28,6 +28,9 @@ video-transcriber <EP_URL> --format docx -o transcript.docx
 # Select specific audio track (e.g. DE interpreter channel)
 video-transcriber <EP_URL> --audio-track de
 
+# Transcribe with speaker names from EP chapter data (video clips only)
+video-transcriber <EP_VIDEO_URL> --transcript --model small
+
 # Tests (use python -m pytest, not bare pytest)
 python -m pytest
 
@@ -41,7 +44,7 @@ ruff format --check src/ tests/
 ```
 src/video_transcriber/
 ├── cli.py           # Argument parsing, output formatting (txt/srt/vtt/md/docx), main() orchestration
-├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV
+├── downloader.py    # EP stream resolution (glcloud API + Watchity CDN), ffmpeg/yt-dlp audio download → 16kHz mono WAV, EP chapter/speaker download + SRT parsing
 ├── transcriber.py   # faster-whisper transcription with CUDA fallback, VAD, per-segment language detection
 ├── postprocess.py   # Filler word removal (DE+EN) and consecutive repetition cleanup
 ├── pipeline.py      # Multi-track orchestration: original floor + DE interpreter merging
@@ -52,7 +55,7 @@ transcribe.bat           # Interactive Windows batch script (prompts for URL, fo
 
 tests/
 ├── test_cli.py          # Timestamp formatting, argument parsing, output format tests
-├── test_downloader.py   # Meeting reference and video clip ID extraction tests
+├── test_downloader.py   # Meeting reference extraction, SRT parsing, speaker extraction, merge tests
 ├── test_pipeline.py     # Interpreter segment matching and collection tests
 └── test_postprocess.py  # Filler removal, repetition cleanup, segment cleaning tests
 ```
@@ -63,7 +66,8 @@ tests/
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
-5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, WebVTT, Markdown, or Word (.docx). Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline). The md and docx formats show video duration at the top instead of per-segment timestamps.
+5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, WebVTT, Markdown, or Word (.docx). Writes to stdout or file. Three modes: `simple` (legacy single-track), `auto` (multi-language pipeline), and `--transcript` (Whisper + EP speaker names). Speaker names appear as `[Speaker Name]` tags in txt/srt/vtt and as bold headings in md/docx. The md and docx formats show video duration at the top instead of per-segment timestamps.
+6. **EP Chapters** (`downloader.py`): The EP multimedia site provides chapter/shotlist SRT files for video clips under "Related content". These contain speaker names and timestamps (not spoken words). The `--transcript` flag downloads these, runs Whisper for the actual words, then merges speaker names into the Whisper output using time-range matching. Chapter URLs are found in the `__NEXT_DATA__` JSON blob. HTML entities in chapter text are decoded automatically.
 
 ## CLI Options
 
@@ -76,6 +80,7 @@ tests/
 | `--language <code>` | Force language (default: auto-detect) |
 | `--format txt\|srt\|vtt\|md\|docx` | Output format (default: txt). md and docx show duration instead of per-segment timestamps. docx requires `-o`. |
 | `-o <path>` | Output file (default: stdout) |
+| `--transcript` | Enrich Whisper output with speaker names from EP chapter data (video clips only) |
 | `--keep-audio` | Keep downloaded audio after transcription |
 | `--audio-dir <dir>` | Directory for audio files (default: temp) |
 
