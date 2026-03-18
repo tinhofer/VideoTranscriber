@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**video-transcriber** — CLI tool that transcribes European Parliament webstreaming videos. Three-stage pipeline: download audio → transcribe with Whisper → format output.
+**video-transcriber** — CLI tool that transcribes European Parliament webstreaming videos. Multi-stage pipeline: download audio → transcribe with Whisper → detect languages → merge interpreter tracks → post-process → format output.
 
 ## Quick Reference
 
@@ -10,12 +10,21 @@
 # Install (dev)
 pip install -e ".[dev]"
 
-# Run
+# Run (simple mode — single track, legacy behavior)
 video-transcriber <EP_URL>
 video-transcriber <EP_URL> -o out.srt --format srt --model small --language en
 
-# Tests
-pytest
+# Run (auto mode — multi-language: EN/DE original, other languages via DE interpreter)
+video-transcriber <EP_URL> --mode auto --model large-v3
+
+# Run with filler/repetition cleanup
+video-transcriber <EP_URL> --clean
+
+# Select specific audio track (e.g. DE interpreter channel)
+video-transcriber <EP_URL> --audio-track de
+
+# Tests (use python -m pytest, not bare pytest)
+python -m pytest
 
 # Lint
 ruff check src/ tests/
@@ -26,22 +35,42 @@ ruff format --check src/ tests/
 
 ```
 src/video_transcriber/
-├── cli.py          # Argument parsing, output formatting (txt/srt/vtt), main() orchestration
-├── downloader.py   # EP glcloud API resolution, ffmpeg/yt-dlp audio download → 16kHz mono WAV
-├── transcriber.py  # faster-whisper transcription with CUDA fallback, VAD, tqdm progress bar
-├── __init__.py     # Package version
-└── __main__.py     # python -m entry point
+├── cli.py           # Argument parsing, output formatting (txt/srt/vtt), main() orchestration
+├── downloader.py    # EP glcloud API resolution, ffmpeg/yt-dlp audio download → 16kHz mono WAV
+├── transcriber.py   # faster-whisper transcription with CUDA fallback, VAD, per-segment language detection
+├── postprocess.py   # Filler word removal (DE+EN) and consecutive repetition cleanup
+├── pipeline.py      # Multi-track orchestration: original floor + DE interpreter merging
+├── __init__.py      # Package version
+└── __main__.py      # python -m entry point
 
 tests/
-├── test_cli.py         # Timestamp formatting, argument parsing, output format tests
-└── test_downloader.py  # Meeting reference extraction tests
+├── test_cli.py          # Timestamp formatting, argument parsing, output format tests
+├── test_downloader.py   # Meeting reference extraction tests
+├── test_pipeline.py     # Interpreter segment matching and collection tests
+└── test_postprocess.py  # Filler removal, repetition cleanup, segment cleaning tests
 ```
 
 ## Architecture
 
-1. **Download** (`downloader.py`): Resolves HLS stream from EP's glcloud API (`control.eup.glcloud.eu`), downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility.
-2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5 and VAD filter. Shows tqdm progress bar based on audio duration.
-3. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps), SRT, or WebVTT. Writes to stdout or file. Auto-cleans temp audio unless `--keep-audio` or `--audio-dir`.
+1. **Download** (`downloader.py`): Resolves HLS stream from EP's glcloud API (`control.eup.glcloud.eu`), downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter).
+2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
+3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
+4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
+5. **Format & Output** (`cli.py`): Formats segments as plain text (with timestamps and language tags), SRT, or WebVTT. Writes to stdout or file. Two modes: `simple` (legacy single-track) and `auto` (multi-language pipeline).
+
+## CLI Options
+
+| Option | Description |
+|---|---|
+| `--mode simple\|auto` | `simple`: single-track (default). `auto`: multi-language pipeline (EN/DE original + DE interpreter) |
+| `--clean` | Remove filler words and repetitions |
+| `--audio-track <code>` | Select audio track: `or` (original floor), `de`/`en`/`fr`/... (interpreter) |
+| `--model <size>` | Whisper model: tiny, base (default), small, medium, large-v3 |
+| `--language <code>` | Force language (default: auto-detect) |
+| `--format txt\|srt\|vtt` | Output format (default: txt) |
+| `-o <path>` | Output file (default: stdout) |
+| `--keep-audio` | Keep downloaded audio after transcription |
+| `--audio-dir <dir>` | Directory for audio files (default: temp) |
 
 ## Dependencies
 
@@ -49,6 +78,7 @@ tests/
 - **faster-whisper** — speech-to-text (wraps ctranslate2)
 - **requests** — HTTP for EP glcloud API
 - **tqdm** — transcription progress bar
+- **lingua-language-detector** — per-segment language detection
 - **ffmpeg** — system dependency, must be on PATH
 
 ## Key Details
@@ -59,3 +89,4 @@ tests/
 - All user-facing status goes to stderr; transcript output goes to stdout (allows piping)
 - EP URL pattern: `https://multimedia.europarl.europa.eu/en/webstreaming/<meeting-ref>`
 - The glcloud API replaced the older connectedviews.eu infrastructure in early 2025
+- EP audio tracks: The glcloud API `audio` parameter selects interpreter channels; the EP website shows these under "Select Audio Track"
