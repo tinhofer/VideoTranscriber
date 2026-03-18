@@ -46,8 +46,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--format",
         default="txt",
-        choices=["txt", "srt", "vtt"],
-        help="Output format (default: txt)",
+        choices=["txt", "srt", "vtt", "docx"],
+        help="Output format (default: txt). docx requires -o to specify output file.",
     )
     parser.add_argument(
         "--audio-dir",
@@ -195,8 +195,43 @@ def _run_auto_mode(args):
     _output_results(segments, args)
 
 
+def write_docx(segments, path):
+    """Write transcription segments to a Word (.docx) file."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+
+    doc = Document()
+    doc.add_heading("Transcript", level=1)
+
+    for segment in segments:
+        ts = format_timestamp(segment["start"]).split(",")[0]
+        lang_tag = ""
+        if "language" in segment:
+            lang_tag = f" [{segment['language'].upper()}]"
+        text = segment["text"].strip()
+
+        p = doc.add_paragraph()
+        # Timestamp in grey
+        ts_run = p.add_run(f"[{ts}]{lang_tag}  ")
+        ts_run.font.size = Pt(9)
+        ts_run.font.color.rgb = RGBColor(128, 128, 128)
+        # Transcript text
+        text_run = p.add_run(text)
+        text_run.font.size = Pt(11)
+
+    doc.save(path)
+
+
 def _output_results(segments, args):
     """Format and output the transcription segments."""
+    if args.format == "docx":
+        if not args.output:
+            print("Error: --format docx requires -o <file.docx>", file=sys.stderr)
+            sys.exit(1)
+        write_docx(segments, args.output)
+        print(f"Transcript written to: {args.output}", file=sys.stderr)
+        return
+
     output = format_segments(segments, args.format)
 
     if args.output:

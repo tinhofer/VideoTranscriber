@@ -23,6 +23,8 @@ EP_VIDEO_PATTERN = re.compile(
 
 GLCLOUD_CONTENT_URL = "https://control.eup.glcloud.eu/content-manager/content-page/{video_id}"
 
+EP_MULTIMEDIA_API_URL = "https://multimedia.europarl.europa.eu"
+
 
 def extract_meeting_ref(url):
     """Extract a reference ID from an EP webstreaming or video URL.
@@ -41,6 +43,105 @@ def extract_meeting_ref(url):
     match = re.search(r"_([A-Z]\d+)$", url.rstrip("/"))
     if match:
         return match.group(1)
+    return None
+
+
+def _resolve_video_clip_url(url):
+    """Resolve video clip URL from the EP multimedia page.
+
+    Video clips (e.g. /video/..._I242316) are hosted on Watchity CDN, not
+    on the glcloud infrastructure used for webstreaming. The EP multimedia
+    page is a Next.js app that embeds all video metadata (including direct
+    MP4 download URLs) in a ``<script id="__NEXT_DATA__">`` JSON blob.
+
+    Args:
+        url: EP multimedia video clip URL.
+
+    Returns:
+        A direct MP4 download URL, or None if not found.
+    """
+    print("Trying to resolve video from EP multimedia page...", file=sys.stderr)
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Could not fetch multimedia page: {e}", file=sys.stderr)
+        return None
+
+    html = resp.text
+
+    # Strategy 1 (primary): Extract from __NEXT_DATA__ JSON
+    # The EP multimedia site is a Next.js app. All video metadata including
+    # direct MP4 URLs on Watchity CDN are in pageProps.mediaItemV2.mediaAssets.
+    next_data_match = re.search(
+        r'<script\s+id="__NEXT_DATA__"\s+type="application/json">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    if next_data_match:
+        try:
+            next_data = json.loads(next_data_match.group(1))
+            page_props = next_data.get("props", {}).get("pageProps", {})
+
+            # Try mediaItemV2.mediaAssets first (has multiple quality levels)
+            media_v2 = page_props.get("mediaItemV2", {})
+            assets = media_v2.get("mediaAssets", [])
+            # Find the best video asset — prefer ORIGINAL, then FHD, HD, SD
+            best_url = None
+            priority = {"ORIGINAL": 0, "FHD": 1, "HD": 2, "SD": 3}
+            best_priority = 999
+            for asset in assets:
+                if asset.get("type") != "video":
+                    continue
+                asset_url = asset.get("url", "")
+                if not asset_url:
+                    continue
+                flavor = asset.get("profileFlavorId", "")
+                p = priority.get(flavor, 50)
+                if p < best_priority:
+                    best_priority = p
+                    best_url = asset_url
+            if best_url:
+                print("Found video URL via __NEXT_DATA__ (Watchity CDN)", file=sys.stderr)
+                return best_url
+
+            # Fallback: try mediaItem.videos (older format)
+            media_v1 = page_props.get("mediaItem", {})
+            videos = media_v1.get("videos", [])
+            for video in videos:
+                resolutions = video.get("resolutions", [])
+                for res in resolutions:
+                    res_url = res.get("url", "")
+                    if res_url:
+                        print(
+                            "Found video URL via __NEXT_DATA__ (legacy format)",
+                            file=sys.stderr,
+                        )
+                        return res_url
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"Could not parse __NEXT_DATA__: {e}", file=sys.stderr)
+
+    # Strategy 2: Look for direct .mp4 or .m3u8 URLs in the page
+    mp4_match = re.search(
+        r'"(https?://cdn-mmc\.watchity\.net/[^"]*\.mp4)"',
+        html,
+    )
+    if mp4_match:
+        video_url = mp4_match.group(1)
+        print("Found Watchity CDN URL in page source", file=sys.stderr)
+        return video_url
+
+    print("Could not find video URL in multimedia page.", file=sys.stderr)
     return None
 
 
@@ -211,10 +312,63 @@ def download_audio(url, output_dir=None, audio_track=None):
             }
     except Exception as e:
         print(
-            f"Warning: Could not resolve stream via glcloud API ({e}). "
-            f"Falling back to yt-dlp extractor.",
+            f"Warning: Could not resolve stream via glcloud API ({e}). ",
             file=sys.stderr,
         )
+        # For video clips, try scraping the multimedia page for a direct URL
+        if EP_VIDEO_PATTERN.match(url):
+            clip_url = _resolve_video_clip_url(url)
+            if clip_url:
+                download_url = clip_url
+            else:
+                print("Falling back to yt-dlp extractor.", file=sys.stderr)
+        else:
+            print("Falling back to yt-dlp extractor.", file=sys.stderr)
+
+    # For direct MP4 URLs (e.g. Watchity CDN video clips), download with ffmpeg
+    if download_url != url and not resolved_hls and download_url.endswith(".mp4"):
+        wav_path = output_dir / f"{meeting_ref}.wav"
+        try:
+            import subprocess
+
+            print(
+                "Downloading video clip with ffmpeg (converting to WAV)...",
+                file=sys.stderr,
+            )
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                download_url,
+                "-vn",  # no video
+                "-ar",
+                "16000",  # 16kHz sample rate
+                "-ac",
+                "1",  # mono
+                "-c:a",
+                "pcm_s16le",  # WAV format
+                "-stats",  # show progress stats
+                str(wav_path),
+            ]
+            result = subprocess.run(
+                ffmpeg_cmd,
+                stdin=subprocess.DEVNULL,
+                timeout=7200,
+            )
+            if result.returncode == 0 and wav_path.exists():
+                return str(wav_path)
+            else:
+                print(
+                    f"ffmpeg failed (exit {result.returncode}), trying yt-dlp...",
+                    file=sys.stderr,
+                )
+        except FileNotFoundError:
+            print(
+                "ffmpeg not found on PATH, trying yt-dlp...",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"ffmpeg error ({e}), trying yt-dlp...", file=sys.stderr)
 
     # If we resolved an HLS URL, try downloading directly with ffmpeg first
     # since yt-dlp's generic extractor may not handle raw m3u8 URLs well.
