@@ -1,4 +1,4 @@
-"""Download audio from European Parliament webstreaming URLs."""
+"""Download audio from European Parliament webstreaming and video URLs."""
 
 import json
 import re
@@ -11,8 +11,13 @@ from urllib.parse import urlencode, urlparse, urlunparse
 import requests
 import yt_dlp
 
-EP_URL_PATTERN = re.compile(
+EP_WEBSTREAMING_PATTERN = re.compile(
     r"https?://multimedia\.europarl\.europa\.eu/(?P<lang>\w+)/webstreaming/"
+    r"(?:[^_]*_)?(?P<id>[\w-]+)"
+)
+
+EP_VIDEO_PATTERN = re.compile(
+    r"https?://multimedia\.europarl\.europa\.eu/(?P<lang>\w+)/video/"
     r"(?:[^_]*_)?(?P<id>[\w-]+)"
 )
 
@@ -20,16 +25,20 @@ GLCLOUD_CONTENT_URL = "https://control.eup.glcloud.eu/content-manager/content-pa
 
 
 def extract_meeting_ref(url):
-    """Extract the meeting reference from an EP webstreaming URL.
+    """Extract a reference ID from an EP webstreaming or video URL.
 
-    Example URL:
-        https://multimedia.europarl.europa.eu/en/webstreaming/
-            committees_20260317-1430-COMMITTEE-EMPL
+    Examples:
+        .../webstreaming/committees_20260317-1430-COMMITTEE-EMPL → 20260317-1430-COMMITTEE-EMPL
+        .../video/some-title_I242316 → I242316
 
-    Returns the part after the last underscore or slash that looks like
-    a meeting reference (e.g. '20260317-1430-COMMITTEE-EMPL').
+    Returns the extracted reference, or None.
     """
+    # Try webstreaming-style meeting reference first
     match = re.search(r"(\d{8}-\d{4}-[\w-]+)$", url.rstrip("/"))
+    if match:
+        return match.group(1)
+    # Try video-style ID (e.g. _I242316)
+    match = re.search(r"_([A-Z]\d+)$", url.rstrip("/"))
     if match:
         return match.group(1)
     return None
@@ -52,7 +61,7 @@ def _resolve_stream_info(url, audio_track=None):
         dict with keys: hls_url, start_time, end_time, final_vod, title,
         or None if not an EP URL.
     """
-    match = EP_URL_PATTERN.match(url)
+    match = EP_WEBSTREAMING_PATTERN.match(url) or EP_VIDEO_PATTERN.match(url)
     if not match:
         return None
 
@@ -155,14 +164,14 @@ def _build_hls_url(info):
 
 
 def download_audio(url, output_dir=None, audio_track=None):
-    """Download audio from an EP webstreaming URL.
+    """Download audio from an EP webstreaming or video URL.
 
-    First tries to resolve the HLS stream URL via the EP's new glcloud
+    First tries to resolve the HLS stream URL via the EP's glcloud
     infrastructure, then falls back to yt-dlp's built-in extractor.
     Downloads and converts to 16kHz mono WAV for Whisper.
 
     Args:
-        url: EP webstreaming URL.
+        url: EP webstreaming or video URL.
         output_dir: Directory to save the audio file.
                     If None, uses a temp directory.
         audio_track: Audio track language code (e.g. 'or' for original floor,
