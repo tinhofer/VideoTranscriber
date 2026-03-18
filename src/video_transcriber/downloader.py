@@ -23,6 +23,8 @@ EP_VIDEO_PATTERN = re.compile(
 
 GLCLOUD_CONTENT_URL = "https://control.eup.glcloud.eu/content-manager/content-page/{video_id}"
 
+EP_MULTIMEDIA_API_URL = "https://multimedia.europarl.europa.eu"
+
 
 def extract_meeting_ref(url):
     """Extract a reference ID from an EP webstreaming or video URL.
@@ -41,6 +43,129 @@ def extract_meeting_ref(url):
     match = re.search(r"_([A-Z]\d+)$", url.rstrip("/"))
     if match:
         return match.group(1)
+    return None
+
+
+def _resolve_video_clip_url(url):
+    """Try to resolve video clip URL by scraping the EP multimedia page.
+
+    Video clips (e.g. /video/..._I242316) may not be available through the
+    glcloud content-page API. This function fetches the multimedia page
+    directly and looks for the video source URL in meta tags, embedded
+    JSON-LD data, or player configuration.
+
+    Args:
+        url: EP multimedia video clip URL.
+
+    Returns:
+        A video download URL (MP4 or HLS), or None if not found.
+    """
+    print("Trying to resolve video from EP multimedia page...", file=sys.stderr)
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Could not fetch multimedia page: {e}", file=sys.stderr)
+        return None
+
+    html = resp.text
+
+    # Strategy 1: Look for og:video meta tag (most reliable for video clips)
+    og_match = re.search(
+        r'<meta\s+(?:property|name)=["\']og:video(?::url)?["\']\s+'
+        r'content=["\'](https?://[^"\']+)["\']',
+        html,
+    )
+    if og_match:
+        video_url = og_match.group(1)
+        print("Found video URL via og:video meta tag", file=sys.stderr)
+        return video_url
+
+    # Also try reversed attribute order (content before property)
+    og_match = re.search(
+        r'<meta\s+content=["\'](https?://[^"\']+)["\']\s+'
+        r'(?:property|name)=["\']og:video(?::url)?["\']',
+        html,
+    )
+    if og_match:
+        video_url = og_match.group(1)
+        print("Found video URL via og:video meta tag", file=sys.stderr)
+        return video_url
+
+    # Strategy 2: Look for JSON-LD with video content URL
+    jsonld_matches = re.findall(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    for jsonld_text in jsonld_matches:
+        try:
+            ld_data = json.loads(jsonld_text)
+            # Handle both single objects and arrays
+            items = ld_data if isinstance(ld_data, list) else [ld_data]
+            for item in items:
+                content_url = item.get("contentUrl") or item.get("embedUrl")
+                if content_url:
+                    print("Found video URL via JSON-LD", file=sys.stderr)
+                    return content_url
+        except (json.JSONDecodeError, AttributeError):
+            continue
+
+    # Strategy 3: Look for direct .mp4 or .m3u8 URLs in the page
+    mp4_match = re.search(
+        r'["\'](https?://[^"\']*\.(?:mp4|m3u8)[^"\']*)["\']',
+        html,
+    )
+    if mp4_match:
+        video_url = mp4_match.group(1)
+        print("Found video URL in page source", file=sys.stderr)
+        return video_url
+
+    # Strategy 4: Look for an embedded glcloud iframe with a different URL pattern
+    iframe_match = re.search(
+        r'<iframe[^>]+src=["\'](https?://[^"\']*glcloud[^"\']*)["\']',
+        html,
+    )
+    if iframe_match:
+        iframe_url = iframe_match.group(1)
+        print(f"Found glcloud iframe URL: {iframe_url}", file=sys.stderr)
+        # Try to fetch the iframe page and extract the stream from there
+        try:
+            iframe_resp = requests.get(
+                iframe_url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            iframe_resp.raise_for_status()
+            ng_match = re.search(
+                r'<script[^>]*id="ng-state"[^>]*>(.*?)</script>',
+                iframe_resp.text,
+                re.DOTALL,
+            )
+            if ng_match:
+                ng_data = json.loads(ng_match.group(1))
+                stream_info = ng_data.get("contentEventKey")
+                if not stream_info:
+                    for _key, value in ng_data.items():
+                        if isinstance(value, dict) and "contentEventKey" in value:
+                            stream_info = value["contentEventKey"]
+                            break
+                if stream_info and stream_info.get("playerUrl"):
+                    return stream_info["playerUrl"]
+        except Exception:
+            pass
+
+    print("Could not find video URL in multimedia page.", file=sys.stderr)
     return None
 
 
@@ -211,10 +336,29 @@ def download_audio(url, output_dir=None, audio_track=None):
             }
     except Exception as e:
         print(
-            f"Warning: Could not resolve stream via glcloud API ({e}). "
-            f"Falling back to yt-dlp extractor.",
+            f"Warning: Could not resolve stream via glcloud API ({e}). ",
             file=sys.stderr,
         )
+        # For video clips, try scraping the multimedia page for a direct URL
+        if EP_VIDEO_PATTERN.match(url):
+            clip_url = _resolve_video_clip_url(url)
+            if clip_url:
+                download_url = clip_url
+                if clip_url.endswith(".m3u8") or ".m3u8" in clip_url:
+                    resolved_hls = True
+                    extra_ydl_opts["http_headers"] = {
+                        "Referer": url,
+                        "Origin": "https://multimedia.europarl.europa.eu",
+                    }
+                else:
+                    # Direct MP4 or other format — yt-dlp can handle these
+                    extra_ydl_opts["http_headers"] = {
+                        "Referer": url,
+                    }
+            else:
+                print("Falling back to yt-dlp extractor.", file=sys.stderr)
+        else:
+            print("Falling back to yt-dlp extractor.", file=sys.stderr)
 
     # If we resolved an HLS URL, try downloading directly with ffmpeg first
     # since yt-dlp's generic extractor may not handle raw m3u8 URLs well.
