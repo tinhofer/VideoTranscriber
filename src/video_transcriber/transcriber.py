@@ -15,7 +15,14 @@ def transcribe_audio(audio_path, model_size="base", language=None, task="transcr
     Returns:
         List of dicts with keys: start, end, text.
     """
-    model = WhisperModel(model_size, device="auto", compute_type="auto")
+    try:
+        model = WhisperModel(model_size, device="auto", compute_type="auto")
+    except Exception:
+        # CUDA not available — fall back to CPU
+        import sys
+
+        print("CUDA not available, using CPU for transcription.", file=sys.stderr)
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
     segments_iter, info = model.transcribe(
         audio_path,
