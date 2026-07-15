@@ -1,6 +1,6 @@
 # Video Transcriber
 
-Transcribe European Parliament webstreaming videos using [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
+Transcribe videos using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Supports any URL that [yt-dlp](https://github.com/yt-dlp/yt-dlp) can handle (YouTube, Vimeo, etc.) as well as European Parliament webstreaming URLs with multi-track and speaker-name features.
 
 ## Installation
 
@@ -15,7 +15,11 @@ pip install -e .
 ## Usage
 
 ```bash
-# Basic transcription (auto-detect language, output to stdout)
+# Any video URL (YouTube, Vimeo, etc.)
+video-transcriber https://www.youtube.com/watch?v=dQw4w9WgXcQ -o transcript.txt
+video-transcriber https://vimeo.com/123456789 --model small --format docx -o transcript.docx
+
+# European Parliament webstreaming
 video-transcriber https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL
 
 # Save to file with timestamps
@@ -44,7 +48,7 @@ video-transcriber URL --keep-audio --audio-dir ./audio
 
 | Option | Description |
 |---|---|
-| `url` | EP webstreaming URL |
+| `url` | Video URL (YouTube, Vimeo, EP webstreaming, or any yt-dlp-supported site) |
 | `-o, --output` | Output file (default: stdout) |
 | `--model` | Whisper model: `tiny`, `base`, `small`, `medium`, `large-v3` |
 | `--language` | Language code, e.g. `en`, `fr`, `de` (default: auto-detect) |
@@ -55,6 +59,6 @@ video-transcriber URL --keep-audio --audio-dir ./audio
 
 ## How it works
 
-1. **Download** — Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract audio from EP webstreaming pages (which use HLS via connectedviews.eu/arbor.nl)
+1. **Download** — Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract audio from any supported video URL. For EP webstreaming URLs, resolves HLS streams via the glcloud API.
 2. **Transcribe** — Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) for speech-to-text with automatic language detection
 3. **Format** — Outputs timestamped text, SRT, or WebVTT subtitles

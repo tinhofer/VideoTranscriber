@@ -6,7 +6,9 @@ import sys
 from video_transcriber.downloader import (
     download_audio,
     download_chapters,
+    is_ep_url,
     merge_speakers_into_segments,
+    normalize_ep_url,
 )
 from video_transcriber.postprocess import clean_segments
 from video_transcriber.transcriber import transcribe_audio
@@ -15,14 +17,17 @@ from video_transcriber.transcriber import transcribe_audio
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="video-transcriber",
-        description="Transcribe European Parliament webstreaming videos.",
+        description=(
+            "Transcribe videos using faster-whisper. "
+            "Accepts any URL supported by yt-dlp (YouTube, Vimeo, etc.) "
+            "as well as European Parliament webstreaming URLs."
+        ),
     )
     parser.add_argument(
         "url",
         help=(
-            "EP webstreaming URL, e.g. "
-            "https://multimedia.europarl.europa.eu/en/webstreaming/"
-            "committees_20260317-1430-COMMITTEE-EMPL"
+            "Video URL to transcribe. Supports EP webstreaming URLs, "
+            "YouTube, Vimeo, and any other yt-dlp-supported site."
         ),
     )
     parser.add_argument(
@@ -178,6 +183,28 @@ def format_segments(segments, fmt):
 
 def main(argv=None):
     args = parse_args(argv)
+
+    # Rewrite alternative EP URL forms (e.g. europarl.europa.eu/streaming/?event=...)
+    args.url = normalize_ep_url(args.url)
+
+    if not is_ep_url(args.url):
+        if args.transcript:
+            print(
+                "Error: --transcript requires an EP multimedia URL.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.mode == "auto":
+            print(
+                "Error: --mode auto requires an EP multimedia URL.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.audio_track:
+            print(
+                "Warning: --audio-track is ignored for non-EP URLs.",
+                file=sys.stderr,
+            )
 
     if args.transcript:
         _run_transcript_mode(args)

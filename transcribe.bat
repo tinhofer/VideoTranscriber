@@ -8,7 +8,7 @@ echo ============================================
 echo.
 
 :: URL input
-set /p "URL=Paste the EP video URL: "
+set /p "URL=Paste the video URL (EP, YouTube, Vimeo, ...): "
 if "%URL%"=="" (
     echo No URL provided. Exiting.
     pause
@@ -47,11 +47,38 @@ if "%MODEL_CHOICE%"=="3" set "MODEL=small"
 if "%MODEL_CHOICE%"=="4" set "MODEL=medium"
 if "%MODEL_CHOICE%"=="5" set "MODEL=large-v3"
 
-:: Output file
+:: Output file -- saved to the central OneDrive transcript folder.
+:: Falls back to the "Transkripte" subfolder next to this script if
+:: the OneDrive folder is not available on this machine.
+set "ONEDRIVE_DIR=%USERPROFILE%\OneDrive - Dr. Andreas Tinhofer"
+if exist "%ONEDRIVE_DIR%" (
+    set "OUTDIR=%ONEDRIVE_DIR%\002_Transkripte"
+) else (
+    set "OUTDIR=%~dp0Transkripte"
+)
+if not exist "%OUTDIR%" mkdir "%OUTDIR%"
+
+:: Timestamp for automatic filenames (locale-independent via PowerShell)
+for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HHmmss"') do set "STAMP=%%i"
+
 echo.
-set /p "OUTFILE=Output filename (e.g. transcript.%FMT%) [press Enter for screen output]: "
-set "OUT_FLAG="
-if not "%OUTFILE%"=="" set "OUT_FLAG=-o "%OUTFILE%""
+set /p "OUTNAME=Output filename (press Enter for an automatic name): "
+
+if "%OUTNAME%"=="" (
+    set "OUTFILE=%OUTDIR%\transkript_%STAMP%.%FMT%"
+) else (
+    if "%OUTNAME:.=%"=="%OUTNAME%" (
+        set "OUTFILE=%OUTDIR%\%OUTNAME%.%FMT%"
+    ) else (
+        set "OUTFILE=%OUTDIR%\%OUTNAME%"
+    )
+)
+
+set "OUT_FLAG=-o "%OUTFILE%""
+
+echo.
+echo Saving transcript to:
+echo   %OUTFILE%
 
 :: Build and run command
 echo.
@@ -61,9 +88,23 @@ echo ============================================
 echo.
 
 python -m video_transcriber "%URL%" --format %FMT% --model %MODEL% --clean %OUT_FLAG%
+set "RC=%ERRORLEVEL%"
 
 echo.
+if not "%RC%"=="0" (
+    echo ============================================
+    echo   ERROR: Transcription failed ^(exit code %RC%^).
+    echo   See the error message above for details.
+    echo   No transcript was written.
+    echo ============================================
+    pause
+    exit /b %RC%
+)
+
 echo ============================================
-echo Done!
+echo Done! Transcript saved to:
+echo   %OUTFILE%
+echo ^(If the file already existed, a numbered
+echo  variant like _2 was used instead.^)
 echo ============================================
 pause

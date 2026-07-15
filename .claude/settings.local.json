@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.oecd-events.org)",
+      "WebFetch(domain:oecd.streamakaci.com)",
+      "Bash(yt-dlp --no-download --print urls \"https://oecd.streamakaci.com/player/46ae5fc5-be97-4be7-9000-eb8f38d30348\")",
+      "Bash(python -m yt_dlp --no-download --print urls \"https://oecd.streamakaci.com/player/46ae5fc5-be97-4be7-9000-eb8f38d30348\")",
+      "Bash(pip show:*)",
+      "Bash(where yt-dlp:*)",
+      "Bash(where ffmpeg:*)",
+      "Bash(pip install:*)",
+      "Read(//c/Users/tinho/**)",
+      "Bash(python \"C:/Users/tinho/OneDrive - Dr. Andreas Tinhofer/001_Programmieren/22_EP-VideoTranscriber/transcribe_file.py\" \"C:/Users/tinho/oecd_opening.mp4\" --model small --language en --format srt -o \"C:/Users/tinho/oecd_opening.srt\")",
+      "Bash(\"C:/Program Files/ffmpeg/bin/ffmpeg.exe\" -i \"C:/Users/tinho/oecd_opening.mp4\" -i \"C:/Users/tinho/oecd_opening.srt\" -c copy -c:s mov_text \"C:/Users/tinho/oecd_subtitled.mp4\" 2>&1)",
+      "Bash(python:*)"
+    ]
+  }
+}

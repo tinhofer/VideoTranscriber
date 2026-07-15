@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**video-transcriber** — CLI tool that transcribes European Parliament webstreaming videos and video clips. Multi-stage pipeline: download audio → transcribe with Whisper → detect languages → merge interpreter tracks → post-process → format output.
+**video-transcriber** — CLI tool that transcribes videos from any yt-dlp-supported URL (YouTube, Vimeo, etc.) as well as European Parliament webstreaming videos with multi-track support. Pipeline: download audio → transcribe with Whisper → detect languages → merge interpreter tracks → post-process → format output.
 
 ## Quick Reference
 
@@ -12,7 +12,11 @@ pip install -e ".[dev]"
 
 # Easy mode (Windows): double-click transcribe.bat — interactive prompts for URL, format, model
 
-# Run (simple mode — single track, legacy behavior)
+# Run on any URL (YouTube, Vimeo, etc.)
+video-transcriber https://www.youtube.com/watch?v=VIDEO_ID
+video-transcriber https://vimeo.com/123456789 --model small --format docx -o transcript.docx
+
+# Run on EP URL (simple mode — single track, legacy behavior)
 video-transcriber <EP_URL>
 video-transcriber <EP_URL> -o out.srt --format srt --model small --language en
 
@@ -62,7 +66,7 @@ tests/
 
 ## Architecture
 
-1. **Download** (`downloader.py`): Accepts both `/webstreaming/` and `/video/` EP URLs. Two resolution paths: **Webstreaming** URLs resolve HLS streams from EP's glcloud API (`control.eup.glcloud.eu`). **Video clip** URLs (e.g. `_I242316`) are resolved by scraping the EP multimedia page (a Next.js app) and extracting direct MP4 URLs from the `__NEXT_DATA__` JSON blob — these are hosted on Watchity CDN (`cdn-mmc.watchity.net`). Downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter). For webstreaming, this uses the glcloud API `audio` parameter. For video clips, ffmpeg selects the matching audio stream by ISO 639-2 language metadata (e.g. `--audio-track de` maps to stream language `ger`).
+1. **Download** (`downloader.py`): Accepts any yt-dlp-supported URL (YouTube, Vimeo, etc.) as well as EP URLs. For generic URLs, yt-dlp handles download directly (extracting video title for the filename). For EP URLs, two resolution paths: **Webstreaming** URLs resolve HLS streams from EP's glcloud API (`control.eup.glcloud.eu`). **Video clip** URLs (e.g. `_I242316`) are resolved by scraping the EP multimedia page (a Next.js app) and extracting direct MP4 URLs from the `__NEXT_DATA__` JSON blob — these are hosted on Watchity CDN (`cdn-mmc.watchity.net`). Downloads via direct ffmpeg (preferred) or yt-dlp fallback. Outputs 16kHz mono WAV for Whisper compatibility. Supports `audio_track` parameter to select EP interpreter channels (`'or'` = original floor, `'de'`/`'en'`/`'fr'` = interpreter). For webstreaming, this uses the glcloud API `audio` parameter. For video clips, ffmpeg selects the matching audio stream by ISO 639-2 language metadata (e.g. `--audio-track de` maps to stream language `ger`).
 2. **Transcribe** (`transcriber.py`): Loads faster-whisper model, probes CUDA availability via ctranslate2, falls back to CPU int8. Uses beam_size=5, VAD filter, and `condition_on_previous_text=False` for verbatim accuracy. Per-segment language detection via `lingua-language-detector`.
 3. **Post-process** (`postprocess.py`): Regex-based removal of filler words (DE: ähm, äh, naja, sozusagen, quasi; EN: um, uh, you know, I mean, etc.) and consecutive phrase repetitions. Activated via `--clean` flag or automatically in `--mode auto`.
 4. **Pipeline** (`pipeline.py`): Multi-language workflow for `--mode auto`. Downloads original floor audio, transcribes with auto-detection, identifies non-EN/DE segments via lingua, downloads DE interpreter track for those time ranges, merges results.
@@ -101,9 +105,12 @@ tests/
 - Ruff config: line-length=100, rules E/F/W/I
 - All user-facing status goes to stderr; transcript output goes to stdout (allows piping)
 - Output files are auto-numbered to avoid overwriting: if `transcript.docx` exists, the next becomes `transcript_2.docx`, `transcript_3.docx`, etc. Applies to all formats with `-o`.
-- Supported EP URL formats:
-  - Webstreaming: `https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL`
-  - Video clips: `https://multimedia.europarl.europa.eu/en/video/some-title_I242316`
+- Supported URL formats:
+  - Any yt-dlp-supported URL (YouTube, Vimeo, etc.)
+  - EP Webstreaming: `https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL`
+  - EP Streaming links: `https://www.europarl.europa.eu/streaming/?event=20260709-1400-SPECIAL-OTHER` (normalized to the multimedia webstreaming URL via `normalize_ep_url()`)
+  - EP Video clips: `https://multimedia.europarl.europa.eu/en/video/some-title_I242316`
+- EP-specific features (`--mode auto`, `--transcript`, `--audio-track`) only work with EP URLs
 - The glcloud API replaced the older connectedviews.eu infrastructure in early 2025
 - EP audio tracks: The glcloud API `audio` parameter selects interpreter channels; the EP website shows these under "Select Audio Track"
 - Video clips vs webstreaming: Two different hosting backends. Webstreaming events use glcloud HLS streams. Video clips (archived content with `/video/..._I<id>` URLs) use Watchity CDN with direct MP4 files — the glcloud API returns 404 for these. The EP multimedia site is a Next.js app; video clip metadata (including MP4 URLs at multiple quality levels: ORIGINAL, FHD, HD, SD) is embedded in `<script id="__NEXT_DATA__">` under `pageProps.mediaItemV2.mediaAssets`.

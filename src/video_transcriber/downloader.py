@@ -27,6 +27,31 @@ GLCLOUD_CONTENT_URL = "https://control.eup.glcloud.eu/content-manager/content-pa
 EP_MULTIMEDIA_API_URL = "https://multimedia.europarl.europa.eu"
 
 
+def normalize_ep_url(url):
+    """Rewrite alternative EP URL forms to the canonical multimedia URL.
+
+    The EP website links live streams as
+    ``https://www.europarl.europa.eu/streaming/?event=<REF>``. The same event
+    is served by the multimedia site, which this tool understands:
+    ``https://multimedia.europarl.europa.eu/en/webstreaming/<REF>``.
+
+    Non-EP URLs (and already-canonical EP URLs) are returned unchanged.
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host.endswith("europarl.europa.eu") and parsed.path.rstrip("/").endswith("streaming"):
+        event = stdlib_parse_qs(parsed.query).get("event", [None])[0]
+        if event:
+            return f"https://multimedia.europarl.europa.eu/en/webstreaming/{event}"
+    return url
+
+
+def is_ep_url(url):
+    """Check whether a URL is an EP multimedia URL."""
+    url = normalize_ep_url(url)
+    return bool(EP_WEBSTREAMING_PATTERN.match(url) or EP_VIDEO_PATTERN.match(url))
+
+
 def extract_meeting_ref(url):
     """Extract a reference ID from an EP webstreaming or video URL.
 
@@ -640,6 +665,73 @@ def _build_hls_url(info):
     return hls_url
 
 
+def _download_audio_generic(url, output_dir):
+    """Download audio from any yt-dlp-supported URL.
+
+    Uses yt-dlp's info extractor to get the video title for the output
+    filename, then downloads and converts to 16kHz mono WAV.
+
+    Args:
+        url: Any video URL supported by yt-dlp.
+        output_dir: Directory to save the audio file.
+
+    Returns:
+        Path to the downloaded audio file (WAV, 16kHz mono).
+    """
+    # Extract title for a meaningful filename
+    title = "audio"
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info and info.get("title"):
+                # Sanitize title for use as filename
+                raw = info["title"]
+                title = re.sub(r'[<>:"/\\|?*]', "_", raw).strip().rstrip(".")
+                if not title:
+                    title = "audio"
+    except Exception:
+        pass
+
+    print(f"Downloading audio via yt-dlp: {title}", file=sys.stderr)
+    output_template = str(output_dir / title)
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": output_template,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "wav",
+            },
+        ],
+        "postprocessor_args": [
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+        ],
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+    wav_path = output_dir / f"{title}.wav"
+    if wav_path.exists():
+        return str(wav_path)
+
+    # yt-dlp may use a slightly different filename; find the output file
+    for f in output_dir.iterdir():
+        if f.suffix == ".wav":
+            return str(f)
+
+    raise FileNotFoundError(
+        f"Downloaded audio not found in {output_dir}. "
+        "Check that ffmpeg is installed and on your PATH."
+    )
+
+
 def download_audio(url, output_dir=None, audio_track=None):
     """Download audio from an EP webstreaming or video URL.
 
@@ -662,6 +754,13 @@ def download_audio(url, output_dir=None, audio_track=None):
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Rewrite alternative EP URL forms (e.g. /streaming/?event=...)
+    url = normalize_ep_url(url)
+
+    # For non-EP URLs, skip EP-specific resolution and go straight to yt-dlp
+    if not is_ep_url(url):
+        return _download_audio_generic(url, output_dir)
 
     meeting_ref = extract_meeting_ref(url) or "audio"
     # Append track suffix to filename to avoid overwriting when downloading

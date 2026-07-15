@@ -6,10 +6,61 @@ from video_transcriber.downloader import (
     _find_srt_urls,
     _parse_srt_timestamp,
     extract_meeting_ref,
+    is_ep_url,
     merge_speakers_into_segments,
+    normalize_ep_url,
     parse_chapter_speaker,
     parse_srt,
 )
+
+# --- URL normalization tests ---
+
+
+def test_normalize_streaming_event_url():
+    url = "https://www.europarl.europa.eu/streaming/?event=20260709-1400-SPECIAL-OTHER"
+    assert normalize_ep_url(url) == (
+        "https://multimedia.europarl.europa.eu/en/webstreaming/20260709-1400-SPECIAL-OTHER"
+    )
+
+
+def test_normalize_streaming_event_url_no_www():
+    url = "https://europarl.europa.eu/streaming/?event=20260709-1400-SPECIAL-OTHER"
+    assert normalize_ep_url(url) == (
+        "https://multimedia.europarl.europa.eu/en/webstreaming/20260709-1400-SPECIAL-OTHER"
+    )
+
+
+def test_normalize_streaming_url_with_extra_params():
+    url = (
+        "https://www.europarl.europa.eu/streaming/"
+        "?event=20260709-1400-SPECIAL-OTHER&language=de"
+    )
+    assert normalize_ep_url(url) == (
+        "https://multimedia.europarl.europa.eu/en/webstreaming/20260709-1400-SPECIAL-OTHER"
+    )
+
+
+def test_normalize_leaves_canonical_ep_url_unchanged():
+    url = (
+        "https://multimedia.europarl.europa.eu/en/webstreaming/"
+        "committees_20260317-1430-COMMITTEE-EMPL"
+    )
+    assert normalize_ep_url(url) == url
+
+
+def test_normalize_leaves_non_ep_url_unchanged():
+    url = "https://www.youtube.com/watch?v=abc123"
+    assert normalize_ep_url(url) == url
+
+
+def test_is_ep_url_accepts_streaming_event_url():
+    url = "https://www.europarl.europa.eu/streaming/?event=20260709-1400-SPECIAL-OTHER"
+    assert is_ep_url(url)
+
+
+def test_extract_meeting_ref_from_streaming_url():
+    url = "https://www.europarl.europa.eu/streaming/?event=20260709-1400-SPECIAL-OTHER"
+    assert extract_meeting_ref(normalize_ep_url(url)) == "20260709-1400-SPECIAL-OTHER"
 
 
 def test_extract_meeting_ref_committee():
