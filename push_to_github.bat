@@ -8,16 +8,15 @@ echo   VideoTranscriber - Commit und Push
 echo ============================================
 echo.
 
-echo Schritt 1/3: Aenderungen committen...
+set /p "MSG=Kurze Beschreibung der Aenderungen (Enter fuer Standardtext): "
+if "%MSG%"=="" set "MSG=Update project files"
+
+echo Schritt 1/2: Aenderungen committen...
 git add -A
-git commit -m "Add EP /streaming/?event= URL support; improve transcribe.bat (error handling, default output to 002_Transkripte)"
+git commit -m "%MSG%"
 echo.
 
-echo Schritt 2/3: Branch in 'main' umbenennen...
-git branch -m main
-echo.
-
-echo Schritt 3/3: Alles zu GitHub hochladen...
+echo Schritt 2/2: Alles zu GitHub hochladen...
 git push -u origin main
 if errorlevel 1 (
     echo.
@@ -33,12 +32,6 @@ if errorlevel 1 (
 
 echo.
 echo ============================================
-echo   Fertig! Branch 'main' ist auf GitHub.
-echo.
-echo   NOCH EIN MANUELLER SCHRITT auf github.com:
-echo   Repo VideoTranscriber - Settings -
-echo   General - Default branch - auf 'main'
-echo   umstellen. Danach koennen die alten
-echo   claude/...-Branches geloescht werden.
+echo   Fertig! Aenderungen sind auf GitHub.
 echo ============================================
 pause
