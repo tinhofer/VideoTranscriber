@@ -10,9 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
-    "yt-dlp>=2026.6.9",
+    "yt-dlp>=2026.7.4",
     "faster-whisper>=1.0.0",
-    "requests>=2.31.0",
+    "requests>=2.32.4",
     "tqdm>=4.60.0",
     "lingua-language-detector>=2.0.0",
     "python-docx>=1.0.0",
