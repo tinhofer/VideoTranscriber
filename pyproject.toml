@@ -20,7 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    # pytest >=9.1.1 fixes CVE-2025-71176 (predictable tmp-dir TOCTOU / symlink race).
+    "pytest>=9.1.1",
     "ruff>=0.3.0",
 ]
 
