@@ -20,7 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    # pytest >=9.1.1 fixes CVE-2025-71176 (predictable tmp-dir TOCTOU / symlink race).
+    # CVE-2025-71176 (predictable tmp-dir TOCTOU / symlink race) is fixed in pytest 9.0.3;
+    # 9.1.1 is the current release we've pinned to.
     "pytest>=9.1.1",
     "ruff>=0.3.0",
 ]
