@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs as stdlib_parse_qs
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 import requests
 import yt_dlp
@@ -22,9 +22,35 @@ EP_VIDEO_PATTERN = re.compile(
     r"(?:[^_]*_)?(?P<id>[\w-]+)"
 )
 
+# EP player / "share clip" URLs point directly at the glcloud content page,
+# e.g. https://control.eup.glcloud.eu/content-manager/content-page/
+#      20260714-1515-COMMITTEE-IMCO?audio=en&start=1784035974&end=1784039247
+GLCLOUD_CLIP_PATTERN = re.compile(
+    r"https?://control\.eup\.glcloud\.eu/content-manager/content-page/"
+    r"(?P<id>[\w-]+)"
+)
+
 GLCLOUD_CONTENT_URL = "https://control.eup.glcloud.eu/content-manager/content-page/{video_id}"
 
 EP_MULTIMEDIA_API_URL = "https://multimedia.europarl.europa.eu"
+
+# The glcloud content page sits behind Akamai bot protection, which answers
+# 403 "Access Denied" unless the request looks like a browser page load.
+# Observed 2026-10: a full browser User-Agent, Accept-Language and the
+# Sec-Fetch-* group are all required (a bare "Mozilla/5.0" is rejected).
+GLCLOUD_PAGE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 
 def normalize_ep_url(url):
@@ -46,10 +72,59 @@ def normalize_ep_url(url):
     return url
 
 
+def parse_glcloud_url(url):
+    """Parse an EP glcloud player URL (the player's "share clip" link).
+
+    The embedded EP player produces links of this form::
+
+        https://control.eup.glcloud.eu/content-manager/content-page/
+        20260714-1515-COMMITTEE-IMCO?audio=en&start=1784035974&end=1784039247&lang=en
+
+    ``start`` and ``end`` are Unix timestamps delimiting the clip within
+    the session; ``audio`` preselects the audio track (original floor or an
+    interpreter channel).
+
+    Args:
+        url: Any URL.
+
+    Returns:
+        dict with keys ``event_id``, ``start``, ``end`` (int or None),
+        ``audio`` (str or None) and ``lang``, or None if the URL is not a
+        glcloud content-page URL.
+    """
+    match = GLCLOUD_CLIP_PATTERN.match(url)
+    if not match:
+        return None
+
+    qs = stdlib_parse_qs(urlparse(url).query)
+
+    def _first(key):
+        values = qs.get(key, [])
+        return values[0] if values else None
+
+    def _to_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "event_id": match.group("id"),
+        "start": _to_int(_first("start")),
+        "end": _to_int(_first("end")),
+        "audio": _first("audio"),
+        "lang": _first("lang") or "en",
+    }
+
+
 def is_ep_url(url):
-    """Check whether a URL is an EP multimedia URL."""
+    """Check whether a URL is an EP multimedia or EP glcloud player URL."""
     url = normalize_ep_url(url)
-    return bool(EP_WEBSTREAMING_PATTERN.match(url) or EP_VIDEO_PATTERN.match(url))
+    return bool(
+        EP_WEBSTREAMING_PATTERN.match(url)
+        or EP_VIDEO_PATTERN.match(url)
+        or GLCLOUD_CLIP_PATTERN.match(url)
+    )
 
 
 def extract_meeting_ref(url):
@@ -61,6 +136,9 @@ def extract_meeting_ref(url):
 
     Returns the extracted reference, or None.
     """
+    # Ignore query string and fragment (e.g. glcloud clip URLs carry
+    # ?audio=..&start=..&end=.. after the event ID)
+    url = urlunparse(urlparse(url)._replace(query="", fragment=""))
     # Try webstreaming-style meeting reference first
     match = re.search(r"(\d{8}-\d{4}-[\w-]+)$", url.rstrip("/"))
     if match:
@@ -554,23 +632,36 @@ def _resolve_stream_info(url, audio_track=None):
     HLS player URL and metadata from the embedded ng-state JSON.
 
     Args:
-        url: EP webstreaming URL.
+        url: EP webstreaming URL or glcloud player/clip URL.
         audio_track: Audio track language code (e.g. 'or' for original floor,
                      'de' for German interpreter, 'en' for English interpreter).
-                     If None, uses the URL's language parameter.
+                     If None, uses the clip URL's ``audio`` parameter (if
+                     present), otherwise the URL's language parameter.
 
     Returns:
         dict with keys: hls_url, start_time, end_time, final_vod, title,
+        clip (True when an explicit start/end range came from the URL),
         or None if not an EP URL.
     """
-    match = EP_WEBSTREAMING_PATTERN.match(url) or EP_VIDEO_PATTERN.match(url)
-    if not match:
-        return None
+    clip_start = clip_end = None
+    clip_audio = None
 
-    lang = match.group("lang") or "en"
-    video_id = match.group("id")
+    clip = parse_glcloud_url(url)
+    if clip:
+        lang = clip["lang"]
+        video_id = clip["event_id"]
+        clip_start = clip["start"]
+        clip_end = clip["end"]
+        clip_audio = clip["audio"]
+    else:
+        match = EP_WEBSTREAMING_PATTERN.match(url) or EP_VIDEO_PATTERN.match(url)
+        if not match:
+            return None
+        lang = match.group("lang") or "en"
+        video_id = match.group("id")
 
-    audio = audio_track if audio_track else lang
+    # Priority: explicit --audio-track > audio= from the clip URL > language
+    audio = audio_track or clip_audio or lang
 
     params = {
         "lang": lang,
@@ -583,13 +674,21 @@ def _resolve_stream_info(url, audio_track=None):
         "multicast": "true",
         "analytics": "false",
     }
+    if clip_start is not None and clip_end is not None:
+        # Forward the clip range so the API can return clip-specific metadata
+        params["start"] = str(clip_start)
+        params["end"] = str(clip_end)
+        print(
+            f"Clip range from URL: {clip_start} - {clip_end} (Unix timestamps)",
+            file=sys.stderr,
+        )
 
     print("Resolving stream from EP glcloud API...", file=sys.stderr)
 
     resp = requests.get(
         GLCLOUD_CONTENT_URL.format(video_id=video_id),
         params=params,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers=GLCLOUD_PAGE_HEADERS,
         timeout=30,
     )
     resp.raise_for_status()
@@ -629,26 +728,42 @@ def _resolve_stream_info(url, audio_track=None):
             "or may no longer be available."
         )
 
-    return {
+    info = {
         "hls_url": player_url,
         "start_time": stream_info.get("startTime"),
         "end_time": stream_info.get("endTime"),
         "final_vod": stream_info.get("finalVod", False),
         "live": stream_info.get("live", False),
         "title": stream_info.get("title"),
+        # Effective audio track (explicit --audio-track > clip URL > language)
+        "audio": audio,
+        # Track order for manifests that only number their audio renditions
+        "language_mapping": stream_info.get("languageMapping"),
     }
+
+    # Explicit clip bounds from the URL take precedence over the event
+    # metadata, so only the clip (not the whole sitting) is downloaded.
+    if clip_start is not None and clip_end is not None:
+        info["start_time"] = clip_start
+        info["end_time"] = clip_end
+        info["clip"] = True
+
+    return info
 
 
 def _build_hls_url(info):
     """Build the final HLS URL, adding time range params if needed.
 
     For non-finalVod streams, the server requires startTime/endTime query
-    parameters on the m3u8 URL to return the correct time range.
+    parameters on the m3u8 URL to return the correct time range. When an
+    explicit clip range was requested (info['clip']), the parameters are
+    appended even for final VODs so only the clip is downloaded.
     """
     hls_url = info["hls_url"]
 
-    # If it's a final VOD, the URL works as-is
-    if info.get("final_vod"):
+    # If it's a final VOD, the URL works as-is — unless an explicit
+    # clip range was requested via the URL.
+    if info.get("final_vod") and not info.get("clip"):
         return hls_url
 
     # For non-final recordings, append time range if available
@@ -663,6 +778,292 @@ def _build_hls_url(info):
         hls_url = urlunparse(parsed._replace(query=new_query))
 
     return hls_url
+
+
+def _parse_m3u8_attributes(attr_string):
+    """Parse an M3U8 attribute list like ``KEY="value",KEY2=value2`` into a dict."""
+    attrs = {}
+    for match in re.finditer(r'([A-Z0-9-]+)=("([^"]*)"|[^",]+)', attr_string):
+        key = match.group(1)
+        value = match.group(3) if match.group(3) is not None else match.group(2)
+        attrs[key] = value
+    return attrs
+
+
+def _parse_hls_audio_renditions(manifest_text):
+    """Parse ``#EXT-X-MEDIA:TYPE=AUDIO`` entries from an HLS master manifest.
+
+    Each entry describes one audio rendition (e.g. original floor or an
+    interpreter channel) with NAME/LANGUAGE metadata and the URI of its
+    media playlist.
+
+    Returns:
+        List of dicts with keys: name, language, uri, default.
+    """
+    renditions = []
+    for line in manifest_text.splitlines():
+        line = line.strip()
+        if not line.startswith("#EXT-X-MEDIA:"):
+            continue
+        attrs = _parse_m3u8_attributes(line[len("#EXT-X-MEDIA:") :])
+        if attrs.get("TYPE", "").upper() != "AUDIO":
+            continue
+        renditions.append(
+            {
+                "name": attrs.get("NAME", ""),
+                "language": attrs.get("LANGUAGE", ""),
+                "uri": attrs.get("URI", ""),
+                "default": attrs.get("DEFAULT", "").upper() == "YES",
+            }
+        )
+    return renditions
+
+
+# Full language names, used to match manifest NAME attributes like "German"
+_TRACK_TO_LANGUAGE_NAME = {
+    "or": "original",
+    "en": "english",
+    "de": "german",
+    "fr": "french",
+    "es": "spanish",
+    "it": "italian",
+    "pt": "portuguese",
+    "nl": "dutch",
+    "pl": "polish",
+    "ro": "romanian",
+    "cs": "czech",
+    "el": "greek",
+    "hu": "hungarian",
+    "sv": "swedish",
+    "da": "danish",
+    "fi": "finnish",
+    "bg": "bulgarian",
+    "hr": "croatian",
+    "sk": "slovak",
+    "sl": "slovenian",
+    "et": "estonian",
+    "lv": "latvian",
+    "lt": "lithuanian",
+    "ga": "irish",
+    "mt": "maltese",
+}
+
+
+_NUMBERED_RENDITION_PATTERN = re.compile(r"audio0*(\d+)", re.IGNORECASE)
+
+
+def _select_numbered_rendition(renditions, audio_track, language_mapping):
+    """Pick a rendition from a manifest that only numbers its audio tracks.
+
+    Live-archive manifests name their renditions audio01..audio32 with
+    private-use LANGUAGE codes (e.g. 'qbf') that say nothing about the
+    language. The content page's ``languageMapping`` list supplies the
+    order instead: entry N (1-based) describes rendition ``audioNN``
+    (verified on 20261001-0900-COMMITTEE-EMPL: OR=audio01, EN=audio02,
+    FR=audio03, DE=audio04).
+
+    Returns:
+        (applies, rendition): ``applies`` is False when the manifest is not
+        of this numbered kind, so the caller should match by metadata.
+    """
+    if not language_mapping:
+        return False, None
+    numbered = {}
+    for rendition in renditions:
+        match = _NUMBERED_RENDITION_PATTERN.fullmatch((rendition.get("name") or "").strip())
+        if not match:
+            return False, None
+        numbered[int(match.group(1))] = rendition
+
+    want = audio_track.lower()
+    for position, entry in enumerate(language_mapping, start=1):
+        if entry and (entry.get("lang") or "").lower() == want:
+            return True, numbered.get(position)
+    return True, None
+
+
+def _select_audio_rendition(renditions, audio_track, language_mapping=None):
+    """Pick the audio rendition matching the requested track.
+
+    Manifests that only number their tracks (audio01, audio02, ...) are
+    resolved via ``language_mapping`` (see ``_select_numbered_rendition``);
+    there the LANGUAGE codes are meaningless, so no metadata match is tried.
+
+    Otherwise matches on the LANGUAGE attribute first (exact, then prefix —
+    covers 'de', 'deu', 'ger', 'de-DE'), then on whole words in the NAME
+    attribute (covers NAME="German" or NAME="Original (floor)"). For 'or' the
+    floor aliases 'qaa', 'original' and 'floor' are recognized.
+
+    Returns:
+        The matching rendition dict, or None.
+    """
+    if not audio_track:
+        return None
+    applies, rendition = _select_numbered_rendition(renditions, audio_track, language_mapping)
+    if applies:
+        return rendition
+    want = audio_track.lower()
+    aliases = {want}
+    iso_code = _AUDIO_TRACK_TO_ISO639_2.get(want)
+    if iso_code:
+        aliases.add(iso_code)
+    if want in ("or", "qaa"):
+        aliases |= {"or", "qaa", "original", "floor"}
+    language_name = _TRACK_TO_LANGUAGE_NAME.get(want)
+    if language_name:
+        aliases.add(language_name)
+
+    def norm(value):
+        return (value or "").strip().lower()
+
+    # Pass 1: exact LANGUAGE attribute match
+    for rendition in renditions:
+        if norm(rendition.get("language")) in aliases:
+            return rendition
+    # Pass 2: LANGUAGE prefix match (e.g. 'de-DE' or 'deu' for 'de')
+    for rendition in renditions:
+        lang = norm(rendition.get("language"))
+        if lang and any(lang.startswith(alias) for alias in aliases if len(alias) >= 2):
+            return rendition
+    # Pass 3: whole-word match in NAME (e.g. 'German', 'Original (floor)').
+    # Short aliases like 'en' are excluded to avoid substring accidents.
+    word_aliases = {alias for alias in aliases if len(alias) >= 3}
+    for rendition in renditions:
+        name = norm(rendition.get("name"))
+        if name and any(re.search(rf"\b{re.escape(alias)}\b", name) for alias in word_aliases):
+            return rendition
+    return None
+
+
+def _refine_hls_audio_url(hls_url, audio_track, language_mapping=None):
+    """Select the audio rendition from the HLS master manifest by metadata.
+
+    The glcloud API's ``audio`` parameter maps tracks to fixed channel
+    indices, which for some events resolves to a silent channel (observed
+    with 'or' → channel-04-bxl on 20260714-1515-COMMITTEE-IMCO). The master
+    manifest lists all audio renditions with NAME/LANGUAGE metadata, so
+    selecting by metadata is more reliable than the channel index.
+
+    Args:
+        hls_url: Resolved HLS URL (master or media playlist).
+        audio_track: Effective audio track code (e.g. 'or', 'de').
+        language_mapping: The content page's ``languageMapping`` list, used
+            for manifests that only number their tracks (audio01, ...).
+
+    Returns:
+        The media-playlist URL of the matching rendition (with the master
+        URL's startTime/endTime carried over), or ``hls_url`` unchanged if
+        the manifest has no audio renditions or no reliable match.
+    """
+    if not audio_track:
+        return hls_url
+
+    try:
+        resp = requests.get(
+            hls_url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://control.eup.glcloud.eu/",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        manifest = resp.text
+    except Exception as e:
+        print(
+            f"Could not inspect HLS manifest ({e}); using resolved URL as-is.",
+            file=sys.stderr,
+        )
+        return hls_url
+
+    renditions = _parse_hls_audio_renditions(manifest)
+    if not renditions:
+        # Media playlist or master without alternate audio — nothing to pick
+        return hls_url
+
+    rendition = _select_audio_rendition(renditions, audio_track, language_mapping)
+    if not rendition or not rendition.get("uri"):
+        available = ", ".join(
+            f"{r['name'] or '?'} (lang={r['language'] or '?'})" for r in renditions
+        )
+        print(
+            f"Warning: audio track '{audio_track}' not found in HLS manifest. "
+            f"Available renditions: {available}. Using the API-resolved track.",
+            file=sys.stderr,
+        )
+        return hls_url
+
+    refined = urljoin(hls_url, rendition["uri"])
+
+    # Carry over time-range parameters from the master URL if missing
+    master_qs = stdlib_parse_qs(urlparse(hls_url).query)
+    parsed = urlparse(refined)
+    refined_qs = stdlib_parse_qs(parsed.query)
+    changed = False
+    for key in ("startTime", "endTime"):
+        if key in master_qs and key not in refined_qs:
+            refined_qs[key] = master_qs[key]
+            changed = True
+    if changed:
+        refined = urlunparse(parsed._replace(query=urlencode(refined_qs, doseq=True)))
+
+    print(
+        f"Selected audio rendition from manifest: "
+        f"{rendition['name'] or '?'} (lang={rendition['language'] or '?'})",
+        file=sys.stderr,
+    )
+    return refined
+
+
+def _parse_mean_volume(ffmpeg_output):
+    """Extract the mean_volume value (dB, float) from ffmpeg volumedetect output."""
+    match = re.search(r"mean_volume:\s*(-?[\d.]+)\s*dB", ffmpeg_output)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+# Below this mean volume (dB) a track is considered silent
+SILENCE_THRESHOLD_DB = -60.0
+
+
+def _check_audio_silence(wav_path):
+    """Verify that a downloaded WAV actually contains audible audio.
+
+    Runs ffmpeg's volumedetect filter and raises RuntimeError if the mean
+    volume is below ``SILENCE_THRESHOLD_DB`` — which almost always means a
+    silent (wrong) audio track was selected.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-i", str(wav_path), "-af", "volumedetect", "-f", "null", "-"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+        )
+    except Exception as e:
+        print(f"Could not run silence check ({e}); continuing.", file=sys.stderr)
+        return
+
+    mean_volume = _parse_mean_volume(result.stderr or "")
+    if mean_volume is None:
+        return
+
+    if mean_volume < SILENCE_THRESHOLD_DB:
+        raise RuntimeError(
+            f"The selected audio track appears to be silent "
+            f"(mean volume {mean_volume:.1f} dB). "
+            "Please choose a different track with --audio-track "
+            "(e.g. 'or' for original floor, 'de'/'en' for interpreters)."
+        )
+    print(f"Audio level check OK (mean volume {mean_volume:.1f} dB)", file=sys.stderr)
 
 
 def _download_audio_generic(url, output_dir):
@@ -763,6 +1164,11 @@ def download_audio(url, output_dir=None, audio_track=None):
         return _download_audio_generic(url, output_dir)
 
     meeting_ref = extract_meeting_ref(url) or "audio"
+    # For clip URLs, include the time range in the filename so different
+    # clips of the same sitting don't overwrite each other.
+    clip = parse_glcloud_url(url)
+    if clip and clip["start"] is not None and clip["end"] is not None:
+        meeting_ref = f"{meeting_ref}_clip_{clip['start']}-{clip['end']}"
     # Append track suffix to filename to avoid overwriting when downloading
     # multiple tracks for the same meeting.
     if audio_track:
@@ -777,6 +1183,11 @@ def download_audio(url, output_dir=None, audio_track=None):
         info = _resolve_stream_info(url, audio_track=audio_track)
         if info:
             hls_url = _build_hls_url(info)
+            # Pick the audio rendition by manifest metadata — the API's fixed
+            # channel mapping resolves to a silent channel for some events.
+            hls_url = _refine_hls_audio_url(
+                hls_url, info.get("audio"), info.get("language_mapping")
+            )
             print(f"Resolved HLS stream URL: {hls_url[:120]}...", file=sys.stderr)
             download_url = hls_url
             resolved_hls = True
@@ -803,6 +1214,7 @@ def download_audio(url, output_dir=None, audio_track=None):
     # For direct MP4 URLs (e.g. Watchity CDN video clips), download with ffmpeg
     if download_url != url and not resolved_hls and download_url.endswith(".mp4"):
         wav_path = output_dir / f"{meeting_ref}.wav"
+        downloaded = False
         try:
             import subprocess
 
@@ -835,7 +1247,7 @@ def download_audio(url, output_dir=None, audio_track=None):
                 timeout=7200,
             )
             if result.returncode == 0 and wav_path.exists():
-                return str(wav_path)
+                downloaded = True
             else:
                 print(
                     f"ffmpeg failed (exit {result.returncode}), trying yt-dlp...",
@@ -848,11 +1260,16 @@ def download_audio(url, output_dir=None, audio_track=None):
             )
         except Exception as e:
             print(f"ffmpeg error ({e}), trying yt-dlp...", file=sys.stderr)
+        if downloaded:
+            # Outside the try block so a silence error is not swallowed
+            _check_audio_silence(wav_path)
+            return str(wav_path)
 
     # If we resolved an HLS URL, try downloading directly with ffmpeg first
     # since yt-dlp's generic extractor may not handle raw m3u8 URLs well.
     if resolved_hls:
         wav_path = output_dir / f"{meeting_ref}.wav"
+        downloaded = False
         try:
             import subprocess
 
@@ -884,7 +1301,7 @@ def download_audio(url, output_dir=None, audio_track=None):
                 timeout=7200,  # 2 hour timeout for long meetings
             )
             if result.returncode == 0 and wav_path.exists():
-                return str(wav_path)
+                downloaded = True
             else:
                 print(
                     f"ffmpeg failed (exit {result.returncode}), trying yt-dlp...",
@@ -897,6 +1314,10 @@ def download_audio(url, output_dir=None, audio_track=None):
             )
         except Exception as e:
             print(f"ffmpeg error ({e}), trying yt-dlp...", file=sys.stderr)
+        if downloaded:
+            # Outside the try block so a silence error is not swallowed
+            _check_audio_silence(wav_path)
+            return str(wav_path)
 
     ydl_opts = {
         "format": "bestaudio/best",
@@ -923,11 +1344,13 @@ def download_audio(url, output_dir=None, audio_track=None):
 
     wav_path = output_dir / f"{meeting_ref}.wav"
     if wav_path.exists():
+        _check_audio_silence(wav_path)
         return str(wav_path)
 
     # yt-dlp may append different extensions; find the output file
     for f in output_dir.iterdir():
         if f.stem == meeting_ref:
+            _check_audio_silence(f)
             return str(f)
 
     raise FileNotFoundError(

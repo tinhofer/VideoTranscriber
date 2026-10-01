@@ -47,6 +47,20 @@ if "%MODEL_CHOICE%"=="3" set "MODEL=small"
 if "%MODEL_CHOICE%"=="4" set "MODEL=medium"
 if "%MODEL_CHOICE%"=="5" set "MODEL=large-v3"
 
+:: Audio track (only relevant for EP videos)
+echo.
+echo Audio track (nur fuer EP-Videos relevant):
+echo   1 = Originalton / Floor (empfohlen)
+echo   2 = Dolmetscher Deutsch
+echo   3 = Dolmetscher Englisch
+echo   4 = Standard (Sprache der URL)
+set /p "TRACK_CHOICE=Choose audio track [1]: "
+if "%TRACK_CHOICE%"=="" set "TRACK_CHOICE=1"
+set "TRACK_FLAG=--audio-track or"
+if "%TRACK_CHOICE%"=="2" set "TRACK_FLAG=--audio-track de"
+if "%TRACK_CHOICE%"=="3" set "TRACK_FLAG=--audio-track en"
+if "%TRACK_CHOICE%"=="4" set "TRACK_FLAG="
+
 :: Output file -- saved to the central OneDrive transcript folder.
 :: Falls back to the "Transkripte" subfolder next to this script if
 :: the OneDrive folder is not available on this machine.
@@ -67,11 +81,9 @@ set /p "OUTNAME=Output filename (press Enter for an automatic name): "
 if "%OUTNAME%"=="" (
     set "OUTFILE=%OUTDIR%\transkript_%STAMP%.%FMT%"
 ) else (
-    if "%OUTNAME:.=%"=="%OUTNAME%" (
-        set "OUTFILE=%OUTDIR%\%OUTNAME%.%FMT%"
-    ) else (
-        set "OUTFILE=%OUTDIR%\%OUTNAME%"
-    )
+    rem Endung .%FMT% anhaengen, falls der Name nicht schon darauf endet
+    rem (robust auch bei Punkten im Namen, z.B. "Webinar_9.7.2026")
+    for /f "delims=" %%i in ('powershell -NoProfile -Command "$n='%OUTNAME%'; if($n.ToLower().EndsWith('.%FMT%')){$n}else{$n+'.%FMT%'}"') do set "OUTFILE=%OUTDIR%\%%i"
 )
 
 set "OUT_FLAG=-o "%OUTFILE%""
@@ -87,7 +99,7 @@ echo Starting transcription...
 echo ============================================
 echo.
 
-python -m video_transcriber "%URL%" --format %FMT% --model %MODEL% --clean %OUT_FLAG%
+python -m video_transcriber "%URL%" --format %FMT% --model %MODEL% --clean %TRACK_FLAG% %OUT_FLAG%
 set "RC=%ERRORLEVEL%"
 
 echo.

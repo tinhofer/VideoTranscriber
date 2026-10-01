@@ -27,6 +27,7 @@ def parse_args(argv=None):
         "url",
         help=(
             "Video URL to transcribe. Supports EP webstreaming URLs, "
+            "EP player clip links (control.eup.glcloud.eu with start/end), "
             "YouTube, Vimeo, and any other yt-dlp-supported site."
         ),
     )
@@ -386,6 +387,16 @@ def _unique_path(path):
 
 def _output_results(segments, args):
     """Format and output the transcription segments."""
+    if not segments:
+        print(
+            "Error: No speech recognized — probably a wrong or silent audio track. "
+            "Try a different track with --audio-track "
+            "(e.g. 'or' for original floor, 'de'/'en' for interpreters). "
+            "No transcript was written.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.format == "docx":
         if not args.output:
             print("Error: --format docx requires -o <file.docx>", file=sys.stderr)

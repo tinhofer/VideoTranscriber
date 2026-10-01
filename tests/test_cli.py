@@ -1,6 +1,8 @@
 """Tests for the CLI module."""
 
-from video_transcriber.cli import format_segments, format_timestamp, parse_args
+import pytest
+
+from video_transcriber.cli import _output_results, format_segments, format_timestamp, parse_args
 
 SAMPLE_SEGMENTS = [
     {"start": 0.0, "end": 3.5, "text": " Hello everyone."},
@@ -141,3 +143,36 @@ def test_format_segments_md_with_speakers():
     output = format_segments(SAMPLE_SEGMENTS_WITH_SPEAKERS, "md")
     assert "**Alice SMITH:**" in output
     assert "**Bob JONES:**" in output
+
+
+# --- Empty transcription handling ---
+
+
+def test_output_results_empty_segments_exits_with_error(capsys, tmp_path):
+    """0 Whisper segments must be an error, not a silent empty document."""
+    out_file = tmp_path / "transcript.txt"
+    args = parse_args(["https://example.com/video", "-o", str(out_file)])
+    with pytest.raises(SystemExit) as exc_info:
+        _output_results([], args)
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "No speech recognized" in captured.err
+    # No (empty) output file must be written
+    assert not out_file.exists()
+
+
+def test_output_results_empty_segments_docx_exits_with_error(capsys, tmp_path):
+    out_file = tmp_path / "transcript.docx"
+    args = parse_args(["https://example.com/video", "--format", "docx", "-o", str(out_file)])
+    with pytest.raises(SystemExit) as exc_info:
+        _output_results([], args)
+    assert exc_info.value.code == 1
+    assert not out_file.exists()
+
+
+def test_output_results_nonempty_still_writes(capsys, tmp_path):
+    out_file = tmp_path / "transcript.txt"
+    args = parse_args(["https://example.com/video", "-o", str(out_file)])
+    _output_results(SAMPLE_SEGMENTS, args)
+    assert out_file.exists()
+    assert "Hello everyone." in out_file.read_text(encoding="utf-8")

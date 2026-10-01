@@ -22,6 +22,9 @@ video-transcriber https://vimeo.com/123456789 --model small --format docx -o tra
 # European Parliament webstreaming
 video-transcriber https://multimedia.europarl.europa.eu/en/webstreaming/committees_20260317-1430-COMMITTEE-EMPL
 
+# EP player clip link ("share clip") — downloads only the clip, not the whole sitting
+video-transcriber "https://control.eup.glcloud.eu/content-manager/content-page/20260714-1515-COMMITTEE-IMCO?audio=en&start=1784035974&end=1784039247&lang=en"
+
 # Save to file with timestamps
 video-transcriber URL -o transcript.txt
 
